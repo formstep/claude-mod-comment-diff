@@ -91,7 +91,7 @@ function engineBeneath(on: On) {
 const typed = (text: string) => ({ text, origin: { kind: "composer" }, wait: false }) as const;
 
 // The whole diff is one Client, so a click on + puts the keyboard in its box.
-const VIEW = "diff-toolu_1";
+const VIEW = "diff-toolu_1-0";
 
 async function type(diff: Diff, text: string) {
   for (const key of text) {
@@ -217,6 +217,39 @@ test("Ctrl+Enter while Claude works is sent as a prompt when the turn ends witho
   expect(prompts[0]).toContain("Also this");
 });
 
+test("a send that never arrives leaves the comment pending and unread, a reply made meanwhile included", async ($, on) => {
+  const prompts: string[] = [];
+  let isDropping = true;
+  on("prompt.submit", (_$, e) => {
+    if (isDropping) {
+      return { drop: "Claude is busy" };
+    }
+
+    prompts.push(e.text);
+    return { text: e.text };
+  });
+  on("turn.start", (_$, e) => ({ turnId: e.turnId }));
+  on("turn.complete", (_$, e) => ({ text: e.answer }));
+  on("ui.render", { component: "PromptHint" }, () => ENGINE_HINT);
+  const diff = await $.ui.mount(DIFF);
+
+  await $.turn.start({ text: "do the thing", turnId: "t1" });
+  await comment(diff, "add-2", "Test1", "comment-single");
+  await diff.press({ key: "reply-2" });
+  await type(diff, "Test2");
+  await diff.press({ key: "comment-review" });
+  await $.turn.complete(TURN_DONE);
+
+  const footer = await $.ui.mount(FOOTER);
+  expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
+
+  isDropping = false;
+  await footer.press({ key: "submit-review" });
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContain("Test1\n\nTest2");
+  expect(prompts[0]).not.toContain("Already sent");
+});
+
 test("an empty box adds no comment, and Cancel closes it", async ($, on) => {
   engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
@@ -281,6 +314,38 @@ test("edit changes the comment's last message; an edit Claude has read goes out 
   await footer.press({ key: "submit-review" });
   expect(prompts[1]).toContain("[c1] /repo/src/thing.tsx:11 (edited since you read it)");
   expect(prompts[1]).toContain("Rename it to total");
+});
+
+test("Ctrl+Enter on an edit saves it and sends the comment at once", async ($, on) => {
+  const { prompts } = engineBeneath(on);
+  const diff = await $.ui.mount(DIFF);
+  await comment(diff, "add-2", "Rename");
+
+  await diff.press({ key: "edit-c1" });
+  await type(diff, " it");
+  await diff.key({ key: "return", ctrl: true });
+
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContain("[c1] /repo/src/thing.tsx:11");
+  expect(prompts[0]).toContain("Rename it");
+});
+
+test("a reply to a resolved comment reopens it", async ($, on) => {
+  engineBeneath(on);
+  const diff = await $.ui.mount(DIFF);
+  await comment(diff, "add-3", "Fine as is");
+
+  const footer = await $.ui.mount(FOOTER);
+  await footer.press({ key: "resolve-c1" });
+  expect(await footer.find({ key: "delete-c1" })).toBeUndefined();
+
+  await diff.press({ key: "reply-3" });
+  await type(diff, "Not quite");
+  await diff.press({ key: "comment-review" });
+
+  expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
+  expect(await footer.find({ key: "delete-c1" })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "resolved by you", in: VIEW })).toBeUndefined();
 });
 
 test("a comment in the overview opens in a pane with its diff; the prompt adds to it until the pane closes", async ($, on) => {
@@ -351,6 +416,66 @@ test("the person can resolve a comment themselves", async ($, on) => {
 
   expect(await footer.find({ key: "delete-c1" })).toBeUndefined();
   expect(await diff.find({ type: "Text", text: "resolved by you", in: VIEW })).toBeDefined();
+});
+
+// A new file long enough that one view's tree would pass the engine's bound.
+const LONG_WRITE = {
+  ...DIFF,
+  requestId: "toolu_long",
+  props: {
+    tool_use_id: "toolu_long",
+    tool: "Write",
+    isErrored: false,
+    output: {
+      type: "create",
+      filePath: `/repo/${"nested/".repeat(12)}long.ts`,
+      content: Array.from({ length: 600 }, (_, i) => `export const value${i} = "line ${i}";\n`).join(""),
+      structuredPatch: [],
+      originalFile: null,
+    },
+  },
+} as const;
+
+test("a long diff is split across views: every line keeps its +, and a comment at a cut keeps its context", async ($, on) => {
+  engineBeneath(on);
+  const diff = await $.ui.mount(LONG_WRITE);
+  const views = await diff.findAll({ type: "Client" });
+  expect(views.length).toBeGreaterThan(1);
+
+  let pluses = 0;
+
+  for (const view of views) {
+    const buttons = await diff.findAll({ type: "Button", in: String(view.props.key) });
+    pluses += buttons.filter((b) => String(b.props.key).startsWith("add-")).length;
+  }
+
+  expect(pluses).toBe(600);
+
+  // The first line of the second view, then the last line of the first.
+  const second = String(views[1]?.props.key);
+  const cut = Number(second.split("-").at(-1));
+
+  for (const [index, view] of [
+    [cut, second],
+    [cut - 1, String(views[0]?.props.key)],
+  ] as const) {
+    await diff.press({ key: `add-${index}` });
+
+    for (const key of "At the cut") {
+      await diff.key({ key, in: view });
+    }
+
+    await diff.press({ key: "comment-review" });
+  }
+
+  const footer = await $.ui.mount(FOOTER);
+
+  for (const id of ["c1", "c2"]) {
+    await footer.press({ key: `go-${id}` });
+    const pane = await $.ui.mount(PANE);
+    expect(await pane.findAll({ type: "Code" })).toHaveLength(7);
+    await pane.unmount();
+  }
 });
 
 test("errored calls and other tools keep the engine's own drawing", async ($, on) => {

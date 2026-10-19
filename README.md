@@ -81,7 +81,7 @@ Comments last for the session. They are not saved between sessions.
 
 ### Limits
 
-Very large diffs (more than 400 lines) and errored tool calls keep Claude Code's normal diff view, without comment buttons.
+Very large diffs (past about 90,000 characters of text, roughly 800 lines or more) and errored tool calls keep Claude Code's normal diff view, without comment buttons. Long diffs below that are drawn in several parts, each with its own `+` buttons. Edits a subagent makes are not drawn as diffs in the transcript, so they have no comment buttons either.
 
 ## Development
 
@@ -104,9 +104,12 @@ Layout:
 
 | Path | What it holds |
 | --- | --- |
-| `hooks/register.tsx` | Hooks: diff rendering, the comment list, the pane, the `resolve` tool, sending |
+| `hooks/register.tsx` | Hook wiring and drawing: the diff, the comment list, the pane, the `resolve` tool |
 | `hooks/diff-view.tsx` | Client module that draws an interactive diff with comment boxes |
-| `hooks/diff.ts` | Diff parsing and the review prompt text |
+| `hooks/threads.ts` | The comments' state and every change to it: add, reply, edit, send, resolve, delete |
+| `hooks/delivery.ts` | Sending to Claude: as a prompt when idle, or on the next tool result mid-turn |
+| `hooks/comment-text.ts` | How comments read: status icons, locations, the review prompt |
+| `hooks/diff.ts` | Diff parsing and one-line hunks |
 | `types/index.d.ts` | State contract and shared types |
 | `tests/` | `claude plugin test` suite |
 

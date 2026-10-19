@@ -1,238 +1,52 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register } from "claude-code";
 
-import type {
-  CommentStatus,
-  DiffComment,
-  DiffViewMessage,
-  DiffViewProps,
-  LineContext,
-  LineRef,
-} from "../types";
-import { basename, changedFile, location, oneLineHunk, reviewPrompt } from "./diff";
+import type { DiffComment, DiffViewMessage, DiffViewProps } from "../types";
+import {
+  countSummary,
+  location,
+  resolvedNote,
+  resolver,
+  reviewLabel,
+  STATUS,
+} from "./comment-text";
+import { attachToToolResult, flushAtTurnEnd, trackTurnStart } from "./delivery";
+import { basename, changedFile, changeSummary, chunked, oneLineHunk } from "./diff";
+import {
+  deleteComment,
+  extendComment,
+  readThreads,
+  resolve,
+  saveMessage,
+  sendNow,
+  submitReview,
+} from "./threads";
 
 const DIFF_TOOLS = new Set(["Edit", "Write"]);
-// Every row is its own Code element, and a Client's props stop at 100,000
-// characters; past either a diff is left to the engine.
-const MAX_ROWS = 400;
+// The views' props count toward the 100,000 characters a tree holds; past
+// that a diff is left to the engine.
 const MAX_PROPS = 90_000;
 const PANE = "diff-comment";
+// The pane's rows besides the context lines and messages: its header, its
+// footer and the margins between them.
+const PANE_CHROME_ROWS = 6;
+// A list row's columns besides the comment's id, text, location and its right
+// side: the icon, the spaces and gaps between them, and a margin so the row
+// never wraps.
+const ROW_CHROME_COLUMNS = 9;
+// What an open comment's buttons draw on the terminal, the gap between them included.
+const ROW_BUTTONS = "[ Resolve ] [ Delete ]";
 
-const threads = atom({ plugin: "diff-comments", key: "threads" } as const, []);
+// The comment open in the pane, if any.
 const viewing = atom({ plugin: "diff-comments", key: "viewing" } as const, null);
-const seq = atom({ plugin: "diff-comments", key: "seq" } as const, 0);
-
-// A plugin's prompt reaches Claude only once it is idle. Mid-turn, comments
-// sent now ride on the next tool result of the main loop instead.
-let isMainTurnRunning = false;
-let agentTurnsRunning = 0;
-let outbox: string[] = [];
-
-const STATUS: Record<CommentStatus, { icon: string; color: string }> = {
-  pending: { icon: "○", color: "warning" },
-  sent: { icon: "◐", color: "suggestion" },
-  resolved: { icon: "✓", color: "success" },
-};
 
 const oneLine = (text: string) => text.replace(/\s*\n\s*/g, " ");
 
 const truncate = (text: string, max: number) =>
   text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text;
 
-const plural = (n: number) => `${n} ${n === 1 ? "line" : "lines"}`;
-
-function changeSummary(added: number, removed: number) {
-  if (added > 0 && removed > 0) {
-    return `Added ${plural(added)}, removed ${plural(removed)}`;
-  }
-
-  return added > 0 ? `Added ${plural(added)}` : `Removed ${plural(removed)}`;
-}
-
-function countSummary(list: readonly DiffComment[]) {
-  const count = (status: CommentStatus) => list.filter((c) => c.status === status).length;
-
-  return `${count("pending")} pending · ${count("sent")} sent · ${count("resolved")} resolved`;
-}
-
-const resolver = (comment: DiffComment) =>
-  `resolved by ${comment.resolvedBy === "claude" ? "Claude" : "you"}`;
-
-function resolvedNote(comment: DiffComment) {
-  if (comment.status !== "resolved") {
-    return "";
-  }
-
-  return comment.resolution
-    ? ` — ${resolver(comment)}: ${comment.resolution}`
-    : ` — ${resolver(comment)}`;
-}
-
-// GitHub's wording: the first pending comment starts a review, later ones join it.
-const reviewLabel = (list: readonly DiffComment[]) =>
-  list.some((c) => c.status === "pending") ? "Add review comment" : "Start a review";
-
-async function addComment(
-  $: EngineInterface,
-  { toolUseId, filePath, index, line }: LineRef,
-  context: LineContext,
-  text: string,
-) {
-  const n = await update($, seq, (last) => last + 1);
-  const comment: DiffComment = {
-    toolUseId,
-    filePath,
-    index,
-    line,
-    context,
-    id: `c${n}`,
-    messages: [text],
-    sent: 0,
-    status: "pending",
-  };
-  await update($, threads, (all) => [...all, comment]);
-
-  return comment.id;
-}
-
-// A message added to a resolved comment reopens it, so Claude reads it.
-async function extendComment($: EngineInterface, id: string, text: string) {
-  if (!(await read($, threads)).some((c) => c.id === id)) {
-    $.ui.toast(`${id} was deleted meanwhile, so the message was not added`);
-    return undefined;
-  }
-
-  await update($, threads, (all) =>
-    all.map((c) => {
-      if (c.id !== id) {
-        return c;
-      }
-
-      const { resolvedBy, resolution, ...rest } = c;
-
-      return { ...rest, messages: [...c.messages, text], status: "pending" };
-    }),
-  );
-
-  return id;
-}
-
-async function editComment($: EngineInterface, id: string, text: string) {
-  const before = (await read($, threads)).find((c) => c.id === id);
-
-  if (before === undefined || before.status === "resolved") {
-    $.ui.toast(`${id} was ${before ? "resolved" : "deleted"} meanwhile, so the edit was not saved`);
-    return;
-  }
-
-  await update($, threads, (all) =>
-    all.map((c) => {
-      if (c.id !== id) {
-        return c;
-      }
-
-      const last = c.messages.length - 1;
-      const messages = [...c.messages.slice(0, last), text];
-
-      // Claude has read the message being edited: it goes out again.
-      return last < c.sent
-        ? { ...c, messages, sent: last, status: "pending", edited: true }
-        : { ...c, messages };
-    }),
-  );
-}
-
-async function submitComments(
-  $: EngineInterface,
-  toSend: readonly DiffComment[],
-  mode: "review" | "now",
-) {
-  if (toSend.length === 0) {
-    return;
-  }
-
-  const before = new Map(toSend.map((c) => [c.id, c]));
-  const text = reviewPrompt(toSend);
-
-  // Marked before submitting: the submit waits until Claude is idle, and a
-  // second press meanwhile must not send the same comments twice.
-  await update($, threads, (all) =>
-    all.map((c) => {
-      if (!before.has(c.id) || c.status === "resolved") {
-        return c;
-      }
-
-      const { edited, ...rest } = c;
-
-      return { ...rest, sent: c.messages.length, status: "sent" };
-    }),
-  );
-
-  if (mode === "now" && isMainTurnRunning) {
-    outbox = [...outbox, text];
-    return;
-  }
-
-  const putBack = (reason: string) => {
-    $.ui.toast(reason);
-
-    return update($, threads, (all) =>
-      all.map((c) => {
-        const old = before.get(c.id);
-
-        return old !== undefined && c.status === "sent"
-          ? { ...c, sent: old.sent, status: "pending", ...(old.edited ? { edited: true } : {}) }
-          : c;
-      }),
-    );
-  };
-
-  try {
-    const sent = await $.prompt.submit({ text, asUser: true });
-
-    if (sent.drop !== undefined) {
-      await putBack(`The comments were not sent: ${sent.drop}`);
-    }
-  } catch (error) {
-    await putBack(
-      `Could not send the comments: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-async function sendNow($: EngineInterface, id: string) {
-  const comment = (await read($, threads)).find((c) => c.id === id);
-
-  if (comment?.status === "pending") {
-    await submitComments($, [comment], "now");
-  }
-}
-
-async function submitReview($: EngineInterface) {
-  await submitComments(
-    $,
-    (await read($, threads)).filter((c) => c.status === "pending"),
-    "review",
-  );
-}
-
-async function resolve(
-  $: EngineInterface,
-  ids: ReadonlySet<string>,
-  by: "person" | "claude",
-  note?: string,
-) {
-  await update($, threads, (all) =>
-    all.map((c) =>
-      ids.has(c.id) && c.status !== "resolved"
-        ? { ...c, status: "resolved", resolvedBy: by, ...(note ? { resolution: note } : {}) }
-        : c,
-    ),
-  );
-}
-
 async function remove($: EngineInterface, id: string) {
-  await update($, threads, (all) => all.filter((c) => c.id !== id || c.status === "resolved"));
+  await deleteComment($, id);
 
   if ((await read($, viewing)) === id) {
     await $.ui.close({ id: PANE });
@@ -247,7 +61,7 @@ async function view($: EngineInterface, comment: DiffComment) {
     title: `${comment.id} · ${location(comment, basename(comment.filePath))}`,
     focus: true,
     closeOnEscape: true,
-    rows: comment.context.lines.length + comment.messages.length + 6,
+    rows: comment.context.lines.length + comment.messages.length + PANE_CHROME_ROWS,
   });
 
   if (!opened.isPlaced) {
@@ -276,20 +90,21 @@ export const register: Register = (on) => {
     return next(e);
   });
 
+  // The matcher stays a literal: the engine's scan reads no imported names there.
   on("tool.call", { tool: "mcp__diff-comments__resolve" }, async ($, e) => {
     const asked = Array.isArray(e.ids)
       ? e.ids.filter((id): id is string => typeof id === "string")
       : [];
     const note = typeof e.note === "string" ? e.note.trim() : undefined;
-    const byId = new Map((await read($, threads)).map((c) => [c.id, c]));
-
-    const open = asked.filter(
-      (id) => byId.get(id)?.status === "sent" || byId.get(id)?.status === "pending",
+    const wasResolved = new Set(
+      (await readThreads($)).filter((c) => c.status === "resolved").map((c) => c.id),
     );
-    const already = asked.filter((id) => byId.get(id)?.status === "resolved");
-    const unknown = asked.filter((id) => !byId.has(id));
+    // Judged by what the write found, so a comment deleted meanwhile counts as unknown.
+    const found = new Set((await resolve($, new Set(asked), "claude", note)).map((c) => c.id));
 
-    await resolve($, new Set(open), "claude", note);
+    const unknown = asked.filter((id) => !found.has(id));
+    const already = asked.filter((id) => found.has(id) && wasResolved.has(id));
+    const open = asked.filter((id) => found.has(id) && !wasResolved.has(id));
 
     const parts = [
       open.length > 0 ? `Resolved ${open.join(", ")}.` : "Resolved nothing.",
@@ -302,74 +117,22 @@ export const register: Register = (on) => {
     return { result: parts.filter(Boolean).join(" ") };
   });
 
-  on("turn.start", async (_$, e, next) => {
-    if (e.agentId === undefined) {
-      isMainTurnRunning = true;
-    } else {
-      agentTurnsRunning += 1;
-    }
+  on("turn.start", trackTurnStart);
+  on("tool.call", attachToToolResult);
+  on("turn.complete", flushAtTurnEnd);
 
-    return next(e);
-  });
-
-  on("tool.call", async (_$, e, next) => {
-    const done = await next(e);
-
-    // While a subagent runs, a tool result may be its, not Claude's.
-    if (done.deny !== undefined || outbox.length === 0 || agentTurnsRunning > 0) {
-      return done;
-    }
-
-    const delivered = outbox;
-    outbox = [];
-
-    return { ...done, context: [...(done.context ?? []), ...delivered] };
-  });
-
-  on("turn.complete", async ($, e, next) => {
-    const done = await next(e);
-
-    if (e.agentId !== undefined) {
-      agentTurnsRunning = Math.max(0, agentTurnsRunning - 1);
-      return done;
-    }
-
-    isMainTurnRunning = false;
-
-    if (outbox.length > 0) {
-      const left = outbox.join("\n\n");
-      outbox = [];
-      void $.prompt.submit({ text: left, asUser: true });
-    }
-
-    return done;
-  });
-
-  on("ui.message", async ($, e) => {
+  on("ui.message", { module: "hooks/diff-view.tsx" }, async ($, e) => {
+    // The matcher admits only the diff view, which posts a DiffViewMessage.
     const message = e.data as DiffViewMessage;
-    const text = typeof message.text === "string" ? message.text.trim() : "";
+    const text = message.text.trim();
 
     if (text === "") {
       return {};
     }
 
-    if (message.edits !== undefined) {
-      await editComment($, message.edits, text);
+    const id = await saveMessage($, e.requestId, message.target, text);
 
-      if (message.action === "single") {
-        await sendNow($, message.edits);
-      }
-
-      return {};
-    }
-
-    const { filePath, index, line, context } = message;
-    const id =
-      message.extends === undefined
-        ? await addComment($, { toolUseId: e.requestId, filePath, index, line }, context, text)
-        : await extendComment($, message.extends, text);
-
-    if (id !== undefined && message.action === "single") {
+    if (id !== undefined && message.sendNow) {
       await sendNow($, id);
     }
 
@@ -407,47 +170,68 @@ export const register: Register = (on) => {
     }
 
     const file = changedFile(e.props.output);
-    const lines = file?.hunks.flat() ?? [];
 
-    if (file === undefined || lines.length === 0 || lines.length > MAX_ROWS) {
+    if (file === undefined) {
       return next(e);
     }
 
-    const all = await read($, threads);
-    const props: DiffViewProps = {
-      filePath: file.filePath,
-      summary: changeSummary(
-        lines.filter((l) => l.kind === "added").length,
-        lines.filter((l) => l.kind === "removed").length,
-      ),
-      hunks: file.hunks,
-      comments: all
-        .filter((c) => c.toolUseId === e.requestId)
-        .map((c) => ({
-          id: c.id,
-          index: c.index,
-          messages: c.messages,
-          status: c.status,
-          note: resolvedNote(c),
-        })),
-      reviewLabel: reviewLabel(all),
-    };
+    const lines = file.hunks.flat();
 
-    if (JSON.stringify(props).length > MAX_PROPS) {
+    if (lines.length === 0) {
       return next(e);
     }
 
-    const { Client } = $.ui.resolve(e);
+    const all = await readThreads($);
+    const comments = all
+      .filter((c) => c.toolUseId === e.requestId)
+      .map((c) => ({
+        id: c.id,
+        index: c.index,
+        messages: c.messages,
+        status: c.status,
+        note: resolvedNote(c),
+      }));
+    const views = chunked(file).map(({ continuesHunk, ...chunk }) => ({
+      continuesHunk,
+      props: {
+        ...chunk,
+        filePath: file.filePath,
+        comments,
+        reviewLabel: reviewLabel(all),
+      } satisfies DiffViewProps,
+    }));
+
+    if (JSON.stringify(views).length > MAX_PROPS) {
+      return next(e);
+    }
+
+    const { Box, Client, Text } = $.ui.resolve(e);
 
     return (
-      <Client key={`diff-${e.requestId}`} module="./diff-view.tsx" props={props} width="100%" />
+      <Box flexDirection="column">
+        <Text>
+          {changeSummary(lines)}
+          <Text dimColor> · + to comment</Text>
+        </Text>
+        {views.map(({ continuesHunk, props }) => (
+          <Box flexDirection="column">
+            {props.first > 0 && !continuesHunk && <Text dimColor> ...</Text>}
+            <Client
+              key={`diff-${e.requestId}-${props.first}`}
+              module="./diff-view.tsx"
+              props={props}
+              width="100%"
+            />
+          </Box>
+        ))}
+      </Box>
     );
   });
 
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
     const { Box, Button, Code, Text } = $.ui.resolve(e);
     const id = await read($, viewing);
-    const comment = (await read($, threads)).find((c) => c.id === id);
+    const comment = (await readThreads($)).find((c) => c.id === id);
 
     if (comment === undefined) {
       return <Text dimColor>This comment was deleted.</Text>;
@@ -487,22 +271,22 @@ export const register: Register = (on) => {
         <Box flexDirection="row" gap={1} marginTop={1}>
           <Box flexGrow={1} flexShrink={1}>
             <Text dimColor>
-              {isOpen ? "Type in the prompt to add to it" : "Type in the prompt to reopen it"} ·
-              Esc closes
+              {isOpen ? "Type in the prompt to add to it" : "Type in the prompt to reopen it"} · Esc
+              closes
             </Text>
           </Box>
           {isOpen && (
-            <Button
-              key="pane-resolve"
-              onPress={() => resolve($, new Set([comment.id]), "person")}
-            >
-              <Text color="success">Resolve</Text>
-            </Button>
-          )}
-          {isOpen && (
-            <Button key="pane-delete" onPress={() => remove($, comment.id)}>
-              <Text color="error">Delete</Text>
-            </Button>
+            <>
+              <Button
+                key="pane-resolve"
+                onPress={() => resolve($, new Set([comment.id]), "person")}
+              >
+                <Text color="success">Resolve</Text>
+              </Button>
+              <Button key="pane-delete" onPress={() => remove($, comment.id)}>
+                <Text color="error">Delete</Text>
+              </Button>
+            </>
           )}
         </Box>
       </Box>
@@ -510,15 +294,13 @@ export const register: Register = (on) => {
   });
 
   on("ui.render", { component: "PromptHint" }, async ($, e, next) => {
-    const list = await read($, threads);
+    const list = await readThreads($);
     const viewed = await read($, viewing);
-    const hint =
+    const hint = await next(
       viewed === null
-        ? await next(e)
-        : await next({
-            ...e,
-            props: { ...e.props, tail: `· Enter adds to ${viewed} · Esc closes it` },
-          });
+        ? e
+        : { ...e, props: { ...e.props, tail: `· Enter adds to ${viewed} · Esc closes it` } },
+    );
 
     if (list.length === 0) {
       return hint;
@@ -551,12 +333,10 @@ export const register: Register = (on) => {
         </Box>
         {ordered.map((comment) => {
           const isOpen = comment.status !== "resolved";
-          const where = location(comment, basename(comment.filePath)).replace(
-            " (removed line)",
-            " (removed)",
-          );
-          const side = isOpen ? "[ Resolve ] [ Delete ]" : resolver(comment);
-          const room = columns - comment.id.length - where.length - side.length - 9;
+          const where = location(comment, basename(comment.filePath), "removed");
+          const side = isOpen ? ROW_BUTTONS : resolver(comment);
+          const room =
+            columns - comment.id.length - where.length - side.length - ROW_CHROME_COLUMNS;
           const said = comment.messages.map(oneLine).join(" · ");
 
           return (
@@ -570,20 +350,21 @@ export const register: Register = (on) => {
                   <Text dimColor>{where}</Text>
                 </Button>
               </Box>
-              {isOpen && (
-                <Button
-                  key={`resolve-${comment.id}`}
-                  onPress={() => resolve($, new Set([comment.id]), "person")}
-                >
-                  <Text color="success">Resolve</Text>
-                </Button>
+              {isOpen ? (
+                <>
+                  <Button
+                    key={`resolve-${comment.id}`}
+                    onPress={() => resolve($, new Set([comment.id]), "person")}
+                  >
+                    <Text color="success">Resolve</Text>
+                  </Button>
+                  <Button key={`delete-${comment.id}`} onPress={() => remove($, comment.id)}>
+                    <Text color="error">Delete</Text>
+                  </Button>
+                </>
+              ) : (
+                <Text dimColor>{side}</Text>
               )}
-              {isOpen && (
-                <Button key={`delete-${comment.id}`} onPress={() => remove($, comment.id)}>
-                  <Text color="error">Delete</Text>
-                </Button>
-              )}
-              {!isOpen && <Text dimColor>{side}</Text>}
             </Box>
           );
         })}

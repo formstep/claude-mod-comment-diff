@@ -1,19 +1,20 @@
 import type { ClientKeyEvent, ClientModule, ClientSurface, RenderElement } from "claude-code";
 
-import type { DiffLine, DiffViewComment, DiffViewMessage, DiffViewProps } from "../types";
-import { oneLineHunk } from "./diff";
+import type {
+  DiffLine,
+  DiffViewComment,
+  DiffViewMessage,
+  DiffViewProps,
+  DiffViewTarget,
+} from "../types";
+import { STATUS } from "./comment-text";
+import { basename, CONTEXT_LINES, oneLineHunk } from "./diff";
 
-type Target = { index: number; edits?: string; extends?: string };
+// The line whose box is open: a new comment, a reply, or an edit of a comment.
+type Target = { index: number } & ({ kind: "new" } | { kind: "reply" | "edit"; id: string });
 type View = { target: Target | null; text: string; cursor: number };
 
 const CLOSED: View = { target: null, text: "", cursor: 0 };
-const CONTEXT_LINES = 3;
-
-const STATUS = {
-  pending: { icon: "○", color: "warning" },
-  sent: { icon: "◐", color: "suggestion" },
-  resolved: { icon: "✓", color: "success" },
-} as const;
 
 // Named keys arrive by name; anything else is typed (or pasted) text.
 const NAMED_KEYS = new Set([
@@ -82,14 +83,19 @@ function edit(view: View, event: ClientKeyEvent): View {
   }
 }
 
-function locate(hunks: readonly DiffLine[][], index: number) {
-  let at = index;
+// The line at `index` with the lines of its hunk around it, the ones a
+// neighbouring view draws included.
+function locate(props: DiffViewProps, index: number) {
+  let at = index - props.first;
 
-  for (const hunk of hunks) {
+  for (const [i, hunk] of props.hunks.entries()) {
     const line = hunk[at];
 
     if (line !== undefined) {
-      return { hunk, at, line };
+      const lead = i === 0 ? props.lead : [];
+      const tail = i === props.hunks.length - 1 ? props.tail : [];
+
+      return { hunk: [...lead, ...hunk, ...tail], at: at + lead.length, line };
     }
 
     at -= hunk.length;
@@ -98,9 +104,37 @@ function locate(hunks: readonly DiffLine[][], index: number) {
   return undefined;
 }
 
+// What the host needs to save the message: a new comment carries its line and
+// the lines around it in its hunk.
+function postedTarget(props: DiffViewProps, target: Target): DiffViewTarget | undefined {
+  if (target.kind !== "new") {
+    return { kind: target.kind, id: target.id };
+  }
+
+  const found = locate(props, target.index);
+
+  if (found === undefined) {
+    return undefined;
+  }
+
+  const { hunk, at, line } = found;
+  const from = Math.max(0, at - CONTEXT_LINES);
+
+  return {
+    kind: "new",
+    filePath: props.filePath,
+    index: target.index,
+    line,
+    context: { lines: hunk.slice(from, at + CONTEXT_LINES + 1), at: at - from },
+  };
+}
+
 const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurface<View>) => {
   const { Box, Button, Code, Text } = surface.elements;
-  const view = surface.state ?? CLOSED;
+  // The language is read off the name; a short path keeps every row small.
+  const path = basename(props.filePath);
+  const current = () => surface.state ?? CLOSED;
+  const view = current();
   const commentOn = (index: number) => props.comments.find((c) => c.index === index);
 
   const open = (target: Target, text = "") =>
@@ -108,35 +142,23 @@ const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurfa
 
   const startAt = (index: number) => {
     const comment = commentOn(index);
-    open(comment === undefined ? { index } : { index, extends: comment.id });
+    open(comment === undefined ? { index, kind: "new" } : { index, kind: "reply", id: comment.id });
   };
 
-  const send = (action: DiffViewMessage["action"]) => {
-    const { target, text } = surface.state ?? CLOSED;
-    const found = target === null ? undefined : locate(props.hunks, target.index);
+  const send = (sendNow: boolean) => {
+    const { target, text } = current();
+    const posted = target === null ? undefined : postedTarget(props, target);
 
-    if (target === null || found === undefined || text.trim() === "") {
+    if (posted === undefined || text.trim() === "") {
       return;
     }
 
-    const { hunk, at, line } = found;
-    const from = Math.max(0, at - CONTEXT_LINES);
-
-    surface.post({
-      action,
-      filePath: props.filePath,
-      index: target.index,
-      line,
-      context: { lines: hunk.slice(from, at + CONTEXT_LINES + 1), at: at - from },
-      ...(target.edits === undefined ? {} : { edits: target.edits }),
-      ...(target.extends === undefined ? {} : { extends: target.extends }),
-      text,
-    } satisfies DiffViewMessage);
+    surface.post({ target: posted, text, sendNow } satisfies DiffViewMessage);
     surface.setState(CLOSED);
   };
 
   surface.onKey((event) => {
-    const before = surface.state ?? CLOSED;
+    const before = current();
 
     if (before.target === null) {
       return;
@@ -145,12 +167,12 @@ const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurfa
     const isEnter = event.key === "return" || event.key === "enter";
 
     if (isEnter && event.ctrl) {
-      send("single");
+      send(true);
       return;
     }
 
     if (isEnter && !event.shift && !event.meta) {
-      send(before.target.edits === undefined ? "review" : "update");
+      send(false);
       return;
     }
 
@@ -166,8 +188,8 @@ const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurfa
     const at = view.text[view.cursor];
     const caret = at === undefined || at === "\n" ? " " : at;
     const rest = view.text.slice(at === undefined || at === "\n" ? view.cursor : view.cursor + 1);
-    const what = target.extends === undefined ? "your comment" : `more for ${target.extends}`;
-    const placeholder = `Type ${what} · Enter: ${target.edits === undefined ? "add to review" : "save"} · Ctrl+Enter: send to Claude now`;
+    const what = target.kind === "reply" ? `more for ${target.id}` : "your comment";
+    const placeholder = `Type ${what} · Enter: ${target.kind === "edit" ? "save" : "add to review"} · Ctrl+Enter: send to Claude now`;
 
     return (
       <Box flexDirection="column" marginLeft={2}>
@@ -192,28 +214,27 @@ const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurfa
           </Box>
           <Box flexDirection="row" flexShrink={0} gap={1}>
             <Button key="comment-cancel" label="Cancel" onPress={() => surface.setState(CLOSED)} />
-            {target.edits !== undefined && (
+            {target.kind === "edit" ? (
               <Button
                 key="comment-update"
                 variant="primary"
                 label="Update comment"
-                onPress={() => send("update")}
+                onPress={() => send(false)}
               />
-            )}
-            {target.edits === undefined && (
-              <Button
-                key="comment-single"
-                label="Add single comment"
-                onPress={() => send("single")}
-              />
-            )}
-            {target.edits === undefined && (
-              <Button
-                key="comment-review"
-                variant="primary"
-                label={props.reviewLabel}
-                onPress={() => send("review")}
-              />
+            ) : (
+              <>
+                <Button
+                  key="comment-single"
+                  label="Add single comment"
+                  onPress={() => send(true)}
+                />
+                <Button
+                  key="comment-review"
+                  variant="primary"
+                  label={props.reviewLabel}
+                  onPress={() => send(false)}
+                />
+              </>
             )}
           </Box>
         </Box>
@@ -243,15 +264,20 @@ const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurfa
           dimColor
           label="edit"
           onPress={() =>
-            open({ index: comment.index, edits: comment.id }, comment.messages.at(-1) ?? "")
+            open(
+              { index: comment.index, kind: "edit", id: comment.id },
+              comment.messages.at(-1) ?? "",
+            )
           }
         />
       )}
     </Box>
   );
 
+  // Rows make up most of the tree, which the engine bounds at 100,000
+  // serialized characters, so each holds only the elements it needs.
   const rows: RenderElement[] = [];
-  let index = 0;
+  let index = props.first;
 
   for (const [hunkIndex, hunk] of props.hunks.entries()) {
     if (hunkIndex > 0) {
@@ -266,20 +292,19 @@ const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurfa
       const editing = view.target?.index === here ? view.target : null;
 
       rows.push(
-        <Box flexDirection="row">
+        <Box flexDirection="row" gap={1}>
           <Button key={`add-${here}`} plain dimColor label="+" onPress={() => startAt(here)} />
-          <Text> </Text>
           <Box flexGrow={1} flexShrink={1}>
-            <Code format="diff" path={props.filePath} source={oneLineHunk(line)} />
+            <Code format="diff" path={path} source={oneLineHunk(line)} />
           </Box>
         </Box>,
       );
 
       if (comment !== undefined) {
-        rows.push(editing?.edits === comment.id ? editor(editing) : note(comment));
+        rows.push(editing?.kind === "edit" ? editor(editing) : note(comment));
       }
 
-      if (editing !== null && editing.edits === undefined) {
+      if (editing !== null && editing.kind !== "edit") {
         rows.push(editor(editing));
       } else if (comment !== undefined) {
         rows.push(
@@ -297,15 +322,7 @@ const DiffView: ClientModule<DiffViewProps, View> = (props, surface: ClientSurfa
     }
   }
 
-  return (
-    <Box flexDirection="column">
-      <Text>
-        {props.summary}
-        <Text dimColor> · + to comment</Text>
-      </Text>
-      {rows}
-    </Box>
-  );
+  return <Box flexDirection="column">{rows}</Box>;
 };
 
 export default DiffView;
