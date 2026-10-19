@@ -5,8 +5,8 @@ import type { DiffComment, DiffViewTarget, Resolver } from "../types";
 import { reviewPrompt } from "./comment-text";
 import { deliver } from "./delivery";
 
-const threads = atom({ plugin: "diff-comments", key: "threads" } as const, []);
-const seq = atom({ plugin: "diff-comments", key: "seq" } as const, 0);
+const threads = atom({ plugin: "comment-diff", key: "threads" } as const, []);
+const seq = atom({ plugin: "comment-diff", key: "seq" } as const, 0);
 
 // The engine's scan follows $ into a function declaration only, and reads an
 // atom only in the file that declares it, so this file owns the comments.

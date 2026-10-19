@@ -1,7 +1,7 @@
 import type { CommentStatus, DiffComment, LineRef } from "../types";
 import { diffRow, lineNumber } from "./diff";
 
-export const RESOLVE_TOOL = "mcp__diff-comments__resolve";
+export const RESOLVE_TOOL = "mcp__comment-diff__resolve";
 
 export const STATUS: Record<CommentStatus, { icon: string; color: string }> = {
   pending: { icon: "○", color: "warning" },

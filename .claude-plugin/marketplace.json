@@ -5,7 +5,7 @@
   },
   "plugins": [
     {
-      "name": "diff-comments",
+      "name": "comment-diff",
       "source": "./",
       "description": "Comment on lines of Claude's diffs, GitHub-review style"
     }

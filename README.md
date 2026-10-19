@@ -1,4 +1,4 @@
-# diff-comments
+# comment-diff
 
 A [Claude Code](https://claude.com/claude-code) mod that lets you review Claude's edits the way you review a pull request on GitHub: comment on individual lines of a diff, batch the comments into a review, send it, and watch Claude work through and resolve each one.
 
@@ -21,7 +21,7 @@ A [Claude Code](https://claude.com/claude-code) mod that lets you review Claude'
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install diff-comments --marketplace formstep/claude-mod-comment-diff
+/plugin install comment-diff --marketplace formstep/claude-mod-comment-diff
 ```
 
 Answer `y` to add the `formstep` marketplace, then press Enter to pick the scope (user scope, the default, enables it in every session). The mod is active immediately, with no restart.
@@ -29,7 +29,7 @@ Answer `y` to add the `formstep` marketplace, then press Enter to pick the scope
 From a shell:
 
 ```sh
-claude plugin install diff-comments --marketplace formstep/claude-mod-comment-diff
+claude plugin install comment-diff --marketplace formstep/claude-mod-comment-diff
 ```
 
 In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `formstep/claude-mod-comment-diff`, then **Add plugin**.
@@ -37,8 +37,8 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 ### Update or remove
 
 ```sh
-claude plugin update diff-comments
-claude plugin uninstall diff-comments
+claude plugin update comment-diff
+claude plugin uninstall comment-diff
 ```
 
 ## Usage

@@ -2,7 +2,7 @@ import type { On, RenderElement } from "claude-code";
 import { expect, test } from "claude-code/testing";
 import type { Mounted } from "claude-code/testing";
 
-const PLUGIN = "diff-comments";
+const PLUGIN = "comment-diff";
 
 const EDIT_OUTPUT = {
   filePath: "/repo/src/thing.tsx",
@@ -387,11 +387,11 @@ test("Submit review sends pending comments, Claude resolves them, and only unres
   expect(prompts).toHaveLength(1);
   expect(prompts[0]).toContain("[c1] /repo/src/thing.tsx:11");
   expect(prompts[0]).toContain("[c2] /repo/src/thing.tsx:11 (removed line)");
-  expect(prompts[0]).toContain("mcp__diff-comments__resolve");
+  expect(prompts[0]).toContain("mcp__comment-diff__resolve");
   expect(await footer.find({ type: "Text", text: "0 pending · 2 sent · 0 resolved" })).toBeDefined();
 
   const answer = await $.tool.call({
-    tool: "mcp__diff-comments__resolve",
+    tool: "mcp__comment-diff__resolve",
     ids: ["c1", "c9"],
     note: "Renamed it",
   });

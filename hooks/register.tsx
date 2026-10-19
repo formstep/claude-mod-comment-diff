@@ -38,7 +38,7 @@ const ROW_CHROME_COLUMNS = 9;
 const ROW_BUTTONS = "[ Resolve ] [ Delete ]";
 
 // The comment open in the pane, if any.
-const viewing = atom({ plugin: "diff-comments", key: "viewing" } as const, null);
+const viewing = atom({ plugin: "comment-diff", key: "viewing" } as const, null);
 
 const oneLine = (text: string) => text.replace(/\s*\n\s*/g, " ");
 
@@ -91,7 +91,7 @@ export const register: Register = (on) => {
   });
 
   // The matcher stays a literal: the engine's scan reads no imported names there.
-  on("tool.call", { tool: "mcp__diff-comments__resolve" }, async ($, e) => {
+  on("tool.call", { tool: "mcp__comment-diff__resolve" }, async ($, e) => {
     const asked = Array.isArray(e.ids)
       ? e.ids.filter((id): id is string => typeof id === "string")
       : [];

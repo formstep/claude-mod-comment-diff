@@ -70,7 +70,7 @@ export type DiffViewMessage = {
 
 declare module "claude-code" {
   interface PluginState {
-    "diff-comments": {
+    "comment-diff": {
       threads: DiffComment[];
       viewing: string | null;
       seq: number;
@@ -78,6 +78,6 @@ declare module "claude-code" {
   }
 
   interface McpToolInputs {
-    "mcp__diff-comments__resolve": { ids: string[]; note?: string };
+    "mcp__comment-diff__resolve": { ids: string[]; note?: string };
   }
 }
