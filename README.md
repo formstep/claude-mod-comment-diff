@@ -1,0 +1,115 @@
+# diff-comments
+
+A [Claude Code](https://claude.com/claude-code) mod that lets you review Claude's edits the way you review a pull request on GitHub: comment on individual lines of a diff, batch the comments into a review, send it, and watch Claude work through and resolve each one.
+
+## Features
+
+- **Line comments on every diff.** Each `Edit` and `Write` result in the transcript is redrawn as a commentable diff with a `+` next to every line. Click it to write a comment on that line.
+- **Reviews or single comments.** Collect several comments into a review and send them together, or send one comment straight away.
+- **Overview above the prompt.** A "Diff comments" list above the prompt box shows every comment with its status, file and line, plus a **Submit review** button.
+- **Threads.** Reply to a comment to add to it, edit your last message, or reopen a resolved comment by replying to it.
+- **Claude resolves what it fixed.** The mod gives Claude a `resolve` tool. After it handles a comment it marks it resolved with a one-line note on what it did, which shows next to the comment.
+- **Works mid-turn.** A comment sent while Claude is busy is delivered with its next tool result, so it does not have to wait for the turn to end.
+
+## Requirements
+
+- Claude Code **2.1.302 or later**, in a terminal session. The diff view is drawn in the terminal only; other surfaces keep the normal diff.
+- Mouse clicks enabled in your terminal (the `+`, `edit`, `reply` and the buttons are clickable).
+
+## Install
+
+At the prompt of a Claude Code terminal session:
+
+```
+/plugin install diff-comments --marketplace formstep/claude-mod-comment-diff
+```
+
+Answer `y` to add the `formstep` marketplace, then press Enter to pick the scope (user scope, the default, enables it in every session). The mod is active immediately, with no restart.
+
+From a shell:
+
+```sh
+claude plugin install diff-comments --marketplace formstep/claude-mod-comment-diff
+```
+
+In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `formstep/claude-mod-comment-diff`, then **Add plugin**.
+
+### Update or remove
+
+```sh
+claude plugin update diff-comments
+claude plugin uninstall diff-comments
+```
+
+## Usage
+
+### 1. Comment on a line
+
+When Claude edits or writes a file, the diff in the transcript shows a dim `+` beside each line. Click it and a comment box opens under that line.
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Add the comment to the review (pending) |
+| `Ctrl+Enter` | Send this comment to Claude now |
+| `Shift+Enter` / `Alt+Enter` | New line |
+| `←` `→` `Home` `End` `Ctrl+A` `Ctrl+E` | Move the cursor |
+| `Ctrl+U` | Delete to start of line |
+
+The buttons under the box do the same: **Start a review** / **Add review comment**, **Add single comment**, **Cancel**.
+
+### 2. Submit the review
+
+Pending comments collect in the **Diff comments** list above the prompt. Press **Submit review (n)** to send them all to Claude in one message. Each comment includes the file, the line and a few lines of surrounding context, so Claude knows exactly what you mean.
+
+### 3. Follow up
+
+Comment status icons:
+
+| Icon | Status |
+| --- | --- |
+| `○` | Pending: written, not yet sent |
+| `◐` | Sent: Claude has it |
+| `✓` | Resolved, by you or by Claude (with its note) |
+
+- **Open a comment:** click it in the list. A pane opens with the diff context and the full thread. While it is open, text you type in the prompt box is added to that comment instead of going to Claude as a normal message. `Esc` closes the pane.
+- **Reply:** click `reply` under a comment in the diff, or type into the open pane.
+- **Edit:** click `edit` on an unresolved comment. If Claude already read it, the edited text is sent again.
+- **Resolve / Delete:** use the buttons in the list or the pane. Resolved comments cannot be deleted; they stay as a record.
+- **Reopen:** reply to a resolved comment and it becomes pending again.
+
+Comments last for the session. They are not saved between sessions.
+
+### Limits
+
+Very large diffs (more than 400 lines) and errored tool calls keep Claude Code's normal diff view, without comment buttons.
+
+## Development
+
+Run the mod from a local clone instead of the installed copy:
+
+```sh
+git clone https://github.com/formstep/claude-mod-comment-diff
+claude --plugin-dir ./claude-mod-comment-diff
+```
+
+Check and test it:
+
+```sh
+claude plugin validate .
+claude plugin test .
+tsc -p .   # after the mod has loaded once, so .claude-plugin/types/ exists
+```
+
+Layout:
+
+| Path | What it holds |
+| --- | --- |
+| `hooks/register.tsx` | Hooks: diff rendering, the comment list, the pane, the `resolve` tool, sending |
+| `hooks/diff-view.tsx` | Client module that draws an interactive diff with comment boxes |
+| `hooks/diff.ts` | Diff parsing and the review prompt text |
+| `types/index.d.ts` | State contract and shared types |
+| `tests/` | `claude plugin test` suite |
+
+## License
+
+[MIT](LICENSE)

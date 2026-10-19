@@ -1,0 +1,16 @@
+{
+  "name": "formstep",
+  "owner": {
+    "name": "formstep"
+  },
+  "plugins": [
+    {
+      "name": "diff-comments",
+      "source": "./",
+      "description": "Comment on lines of Claude's diffs, GitHub-review style"
+    }
+  ],
+  "metadata": {
+    "description": "Claude Code mods by formstep"
+  }
+}
