@@ -1,0 +1,6 @@
+{
+  "name": "diff-comments",
+  "version": "0.1.0",
+  "description": "Comment on lines of Claude's diffs, send them as a review and track pending/resolved comments above the prompt",
+  "types": "./types/index.d.ts"
+}
