@@ -2,19 +2,20 @@ import type { ClientModule, ClientSurface, RenderElement } from "claude-code";
 
 import type { DiffViewComment, DiffViewMessage, DiffViewProps, DiffViewTarget } from "../types";
 import { STATUS } from "./comment-text";
-import { basename, CONTEXT_LINES, oneLineHunk } from "./diff";
+import { basename, CONTEXT_LINES, oneLineHunk, unpacked } from "./diff";
+import type { ViewLines } from "./diff";
 
 // The line at `index` with the lines of its hunk around it, the ones a
 // neighbouring view draws included.
-function locate(props: DiffViewProps, index: number) {
-  let at = index - props.first;
+function locate(lines: ViewLines, index: number) {
+  let at = index - lines.first;
 
-  for (const [i, hunk] of props.hunks.entries()) {
+  for (const [i, hunk] of lines.hunks.entries()) {
     const line = hunk[at];
 
     if (line !== undefined) {
-      const lead = i === 0 ? props.lead : [];
-      const tail = i === props.hunks.length - 1 ? props.tail : [];
+      const lead = i === 0 ? lines.lead : [];
+      const tail = i === lines.hunks.length - 1 ? lines.tail : [];
 
       return { hunk: [...lead, ...hunk, ...tail], at: at + lead.length, line };
     }
@@ -27,8 +28,12 @@ function locate(props: DiffViewProps, index: number) {
 
 // What the host needs to save a new comment: its line and the lines around it
 // in its hunk.
-function newTarget(props: DiffViewProps, index: number): DiffViewTarget | undefined {
-  const found = locate(props, index);
+function newTarget(
+  filePath: string,
+  lines: ViewLines,
+  index: number,
+): DiffViewTarget | undefined {
+  const found = locate(lines, index);
 
   if (found === undefined) {
     return undefined;
@@ -39,7 +44,7 @@ function newTarget(props: DiffViewProps, index: number): DiffViewTarget | undefi
 
   return {
     kind: "new",
-    filePath: props.filePath,
+    filePath,
     index,
     line,
     context: { lines: hunk.slice(from, at + CONTEXT_LINES + 1), at: at - from },
@@ -50,6 +55,7 @@ const DiffView: ClientModule<DiffViewProps> = (props, surface: ClientSurface) =>
   const { Box, Button, Code, Text } = surface.elements;
   // The language is read off the name; a short path keeps every row small.
   const path = basename(props.filePath);
+  const lines = unpacked(props);
   const commentOn = (index: number) => props.comments.find((c) => c.index === index);
 
   // The comment is written in the hooks module's pane: a click here never
@@ -62,7 +68,11 @@ const DiffView: ClientModule<DiffViewProps> = (props, surface: ClientSurface) =>
 
   const startAt = (index: number) => {
     const comment = commentOn(index);
-    open(comment === undefined ? newTarget(props, index) : { kind: "reply", id: comment.id });
+    open(
+      comment === undefined
+        ? newTarget(props.filePath, lines, index)
+        : { kind: "reply", id: comment.id },
+    );
   };
 
   const note = (comment: DiffViewComment) => (
@@ -99,9 +109,9 @@ const DiffView: ClientModule<DiffViewProps> = (props, surface: ClientSurface) =>
   // Rows make up most of the tree, which the engine bounds at 100,000
   // serialized characters, so each holds only the elements it needs.
   const rows: RenderElement[] = [];
-  let index = props.first;
+  let index = lines.first;
 
-  for (const [hunkIndex, hunk] of props.hunks.entries()) {
+  for (const [hunkIndex, hunk] of lines.hunks.entries()) {
     if (hunkIndex > 0) {
       rows.push(<Text dimColor> ...</Text>);
     }

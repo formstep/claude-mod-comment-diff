@@ -459,20 +459,46 @@ const LONG_WRITE = {
   },
 } as const;
 
+// A new file whose lines, each sent to the views as a DiffLine, would pass the
+// characters a tree holds for its views' props.
+const WIDE_WRITE = {
+  ...DIFF,
+  requestId: "toolu_wide",
+  props: {
+    tool_use_id: "toolu_wide",
+    tool: "Write",
+    isErrored: false,
+    output: {
+      type: "create",
+      filePath: "/repo/wide.ts",
+      content: Array.from(
+        { length: 900 },
+        (_, i) => `export const value${i} = "a longer string literal that fills line ${i}";\n`,
+      ).join(""),
+      structuredPatch: [],
+      originalFile: null,
+    },
+  },
+} as const;
+
+// The + buttons across every view of the diff.
+async function pluses(diff: Diff) {
+  let count = 0;
+
+  for (const view of await diff.findAll({ type: "Client" })) {
+    const buttons = await diff.findAll({ type: "Button", in: String(view.props.key) });
+    count += buttons.filter((b) => String(b.props.key).startsWith("add-")).length;
+  }
+
+  return count;
+}
+
 test("a long diff is split across views: every line keeps its +, and a comment at a cut keeps its context", async ($, on) => {
   engineBeneath(on);
   const diff = await $.ui.mount(LONG_WRITE);
   const views = await diff.findAll({ type: "Client" });
   expect(views.length).toBeGreaterThan(1);
-
-  let pluses = 0;
-
-  for (const view of views) {
-    const buttons = await diff.findAll({ type: "Button", in: String(view.props.key) });
-    pluses += buttons.filter((b) => String(b.props.key).startsWith("add-")).length;
-  }
-
-  expect(pluses).toBe(600);
+  expect(await pluses(diff)).toBe(600);
 
   // The first line of the second view, then the last line of the first.
   const second = String(views[1]?.props.key);
@@ -493,6 +519,13 @@ test("a long diff is split across views: every line keeps its +, and a comment a
     expect(await pane.findAll({ type: "Code" })).toHaveLength(7);
     await pane.unmount();
   }
+});
+
+test("a diff too long to send each line as an object still gets a + on every line", async ($, on) => {
+  engineBeneath(on);
+  const diff = await $.ui.mount(WIDE_WRITE);
+
+  expect(await pluses(diff)).toBe(900);
 });
 
 test("errored calls and other tools keep the engine's own drawing", async ($, on) => {

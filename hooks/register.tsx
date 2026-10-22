@@ -18,7 +18,7 @@ import {
   STATUS,
 } from "./comment-text";
 import { attachToToolResult, flushAtTurnEnd, trackTurnStart } from "./delivery";
-import { basename, changedFile, changeSummary, chunked, oneLineHunk } from "./diff";
+import { basename, changedFile, changeSummary, chunked, oneLineHunk, packed } from "./diff";
 import {
   deleteComment,
   readThreads,
@@ -232,14 +232,18 @@ export const register: Register = (on) => {
         status: c.status,
         note: resolvedNote(c),
       }));
-    const views = chunked(file).map(({ continuesHunk, ...chunk }) => ({
-      continuesHunk,
-      props: {
-        ...chunk,
-        filePath: file.filePath,
-        comments,
-      } satisfies DiffViewProps,
-    }));
+    const views = chunked(file).map(({ continuesHunk, ...chunk }) => {
+      const end = chunk.first + chunk.hunks.flat().length;
+
+      return {
+        continuesHunk,
+        props: {
+          ...packed(chunk),
+          filePath: file.filePath,
+          comments: comments.filter((c) => c.index >= chunk.first && c.index < end),
+        } satisfies DiffViewProps,
+      };
+    });
 
     if (JSON.stringify(views).length > MAX_PROPS) {
       return next(e);

@@ -1,12 +1,22 @@
-import type { DiffLine, DiffViewProps } from "../types";
+import type { DiffLine, DiffRun, DiffViewProps } from "../types";
 
 export type ChangedFile = {
   filePath: string;
   hunks: DiffLine[][];
 };
 
+type PackedLines = Pick<DiffViewProps, "first" | "hunks" | "lead" | "tail">;
+
+// The lines one view draws, as its props carry them once unpacked.
+export type ViewLines = {
+  first: number;
+  hunks: DiffLine[][];
+  lead: DiffLine[];
+  tail: DiffLine[];
+};
+
 // A run of a diff's lines that one view draws.
-export type DiffChunk = Pick<DiffViewProps, "first" | "hunks" | "lead" | "tail"> & {
+export type DiffChunk = ViewLines & {
   // Whether its first line goes on with a hunk the view before it draws.
   continuesHunk: boolean;
 };
@@ -21,11 +31,7 @@ export const CONTEXT_LINES = 3;
 const ROW_COST = 340;
 const VIEW_BUDGET = 70_000;
 
-type Hunk = {
-  oldStart: number;
-  newStart: number;
-  lines: readonly string[];
-};
+type Hunk = Readonly<DiffRun>;
 
 const MARKER = { added: "+", removed: "-", context: " " } as const;
 
@@ -159,6 +165,27 @@ export const lineNumber = (line: DiffLine) =>
 
 // The line as a unified diff writes it: marker, then text.
 export const diffRow = (line: DiffLine) => `${MARKER[line.kind]}${line.text}`;
+
+const run = (lines: readonly DiffLine[]): DiffRun => ({
+  oldStart: lines[0]?.oldLine ?? 0,
+  newStart: lines[0]?.newLine ?? 0,
+  lines: lines.map(diffRow),
+});
+
+// A view's lines as its props carry them, and back.
+export const packed = ({ first, hunks, lead, tail }: ViewLines): PackedLines => ({
+  first,
+  hunks: hunks.map(run),
+  lead: run(lead),
+  tail: run(tail),
+});
+
+export const unpacked = ({ first, hunks, lead, tail }: PackedLines): ViewLines => ({
+  first,
+  hunks: hunks.map(hunkLines),
+  lead: hunkLines(lead),
+  tail: hunkLines(tail),
+});
 
 // A one-line unified hunk, so the engine's own diff renderer draws each row
 // with its gutter, marker and colours while we put a button beside it.

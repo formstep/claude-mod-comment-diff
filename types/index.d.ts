@@ -42,16 +42,26 @@ export type DiffViewComment = {
   note: string;
 };
 
+// Lines as a unified diff writes them (marker, then text), numbered from the
+// first one's: about half the characters of each line as a DiffLine, which
+// keeps a long diff within the room a tree holds for its views' props.
+export type DiffRun = {
+  oldStart: number;
+  newStart: number;
+  lines: string[];
+};
+
 // A long diff is drawn by several views, each holding a run of its lines.
 export type DiffViewProps = {
   filePath: string;
   // The index, across the whole diff, of the view's first line.
   first: number;
-  hunks: DiffLine[][];
+  hunks: DiffRun[];
   // The lines just before and after the view's own, in the same hunk, which a
   // neighbouring view draws: the context a comment at the view's edge needs.
-  lead: DiffLine[];
-  tail: DiffLine[];
+  lead: DiffRun;
+  tail: DiffRun;
+  // Only the comments on the view's own lines.
   comments: DiffViewComment[];
 };
 
