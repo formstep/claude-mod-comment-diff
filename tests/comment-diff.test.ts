@@ -218,6 +218,31 @@ test("a blank comment adds nothing and keeps the box; Cancel gives the prompt ba
   expect(await footer.drawn()).toMatchObject(ENGINE_HINT);
 });
 
+test("pressing the + or edit of the comment being written again cancels it", async ($, on) => {
+  const { prompts } = engineBeneath(on);
+  const diff = await $.ui.mount(DIFF);
+  const band = await $.ui.mount(BAND);
+
+  box.text = "mine";
+  await diff.press({ key: "add-2" });
+  await diff.press({ key: "add-2" });
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
+  expect(box.text).toBe("mine");
+
+  // Another line's + moves the comment there instead.
+  await diff.press({ key: "add-2" });
+  await diff.press({ key: "add-3" });
+  expect(await band.find({ type: "Text", text: "thing.tsx:12" })).toBeDefined();
+  await write($, "Test1");
+
+  await diff.press({ key: "edit-c1" });
+  expect(box.text).toBe("Test1");
+  await diff.press({ key: "edit-c1" });
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
+  expect(box.text).toBe("mine");
+  expect(prompts).toEqual([]);
+});
+
 test("a send that never arrives leaves the comment pending and unread, a reply made meanwhile included", async ($, on) => {
   const prompts: string[] = [];
   let isDropping = true;

@@ -51,7 +51,7 @@ When Claude edits or writes a file, or runs a command that changes one, the diff
 | --- | --- |
 | `Enter` | Add the comment to the review (pending) |
 | **Send now** | Send this comment to Claude now |
-| **Cancel** | Drop the comment |
+| **Cancel**, or the same `+` again | Drop the comment |
 
 Whatever you had typed in the prompt is set aside while you write the comment, and put back after. Slash commands still run as usual.
 

@@ -64,9 +64,11 @@ const heading = (target: CommentTarget) =>
     ? "New comment"
     : `${target.kind === "reply" ? "Reply to" : "Edit"} ${target.id}`;
 
+type DraftStart = Pick<CommentDraft, "toolUseId" | "target">;
+
 // The line a draft is on, and the comment it adds to or edits.
 function draftLine(
-  draft: Pick<CommentDraft, "toolUseId" | "target">,
+  draft: DraftStart,
   all: readonly DiffComment[],
 ): { ref: LineRef; context: LineContext; comment?: DiffComment } | undefined {
   const { target } = draft;
@@ -83,10 +85,30 @@ function draftLine(
   return comment === undefined ? undefined : { ref: comment, context: comment.context, comment };
 }
 
+// Whether two presses are on the same line's comment, or the same comment.
+function isSameTarget(a: DraftStart, b: DraftStart) {
+  const x = a.target;
+  const y = b.target;
+
+  if (x.kind === "new" || y.kind === "new") {
+    return x.kind === "new" && y.kind === "new" && a.toolUseId === b.toolUseId && x.index === y.index;
+  }
+
+  return x.kind === y.kind && x.id === y.id;
+}
+
 // Starts a comment, written in the prompt box under the box that shows its
 // line. The person's own draft is set aside until the comment is saved or
-// cancelled; an edit starts from the comment's last message.
-async function compose($: EngineInterface, started: Pick<CommentDraft, "toolUseId" | "target">) {
+// cancelled; an edit starts from the comment's last message. A second press
+// on the comment being written cancels it, as Esc would if the prompt let it.
+async function compose($: EngineInterface, started: DraftStart) {
+  const current = await read($, drafting);
+
+  if (current !== null && isSameTarget(current, started)) {
+    await endDraft($);
+    return;
+  }
+
   const found = draftLine(started, await readThreads($));
 
   if (found === undefined) {
@@ -94,7 +116,6 @@ async function compose($: EngineInterface, started: Pick<CommentDraft, "toolUseI
     return;
   }
 
-  const current = await read($, drafting);
   const aside = current?.aside ?? (await $.prompt.read()).text;
   await update($, drafting, () => ({ ...started, aside }));
 
