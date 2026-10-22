@@ -35,15 +35,6 @@ const DIFF_TOOLS = new Set(["Edit", "Write"]);
 // nodes, about four a row; past either a diff is left to the engine.
 const MAX_TEXT = 90_000;
 const MAX_ROWS = 4_000;
-const PANE = "diff-comment";
-// The pane's rows besides the context lines and messages: its header, its
-// footer and the margins between them.
-const PANE_CHROME_ROWS = 6;
-// The comment field in its border, the margin above the key hints and the hints.
-const FIELD_ROWS = 5;
-// The engine binds Ctrl+Enter to it by default; a Button naming it is
-// pressed by that chord.
-const SEND_NOW_ACTION = "chat:sendNow";
 // A list row's columns besides the comment's id, text, location and its right
 // side: the icon, the spaces and gaps between them, and a margin so the row
 // never wraps.
@@ -52,9 +43,6 @@ const ROW_CHROME_COLUMNS = 9;
 const ROW_BUTTONS = "[ Resolve ] [ Delete ]";
 
 const drafting = atom({ plugin: "comment-diff", key: "draft" } as const, null);
-// What the draft's field holds, for the send-now Button, which the field's own
-// submit does not cover.
-let draftText = "";
 
 const oneLine = (text: string) => text.replace(/\s*\n\s*/g, " ");
 
@@ -67,7 +55,7 @@ async function remove($: EngineInterface, id: string) {
   const draft = await read($, drafting);
 
   if (draft !== null && draft.target.kind !== "new" && draft.target.id === id) {
-    await $.ui.close({ id: PANE });
+    await endDraft($);
   }
 }
 
@@ -78,7 +66,7 @@ const heading = (target: CommentTarget) =>
 
 // The line a draft is on, and the comment it adds to or edits.
 function draftLine(
-  draft: CommentDraft,
+  draft: Pick<CommentDraft, "toolUseId" | "target">,
   all: readonly DiffComment[],
 ): { ref: LineRef; context: LineContext; comment?: DiffComment } | undefined {
   const { target } = draft;
@@ -95,52 +83,59 @@ function draftLine(
   return comment === undefined ? undefined : { ref: comment, context: comment.context, comment };
 }
 
-async function compose($: EngineInterface, draft: CommentDraft) {
-  const found = draftLine(draft, await readThreads($));
+// Starts a comment, written in the prompt box under the box that shows its
+// line. The person's own draft is set aside until the comment is saved or
+// cancelled; an edit starts from the comment's last message.
+async function compose($: EngineInterface, started: Pick<CommentDraft, "toolUseId" | "target">) {
+  const found = draftLine(started, await readThreads($));
 
   if (found === undefined) {
     $.ui.toast("That comment was deleted meanwhile");
     return;
   }
 
-  await update($, drafting, () => draft);
-  draftText = draft.target.kind === "edit" ? (found.comment?.messages.at(-1) ?? "") : "";
+  const current = await read($, drafting);
+  const aside = current?.aside ?? (await $.prompt.read()).text;
+  await update($, drafting, () => ({ ...started, aside }));
 
-  const opened = await $.ui.open({
-    id: PANE,
-    title: `${heading(draft.target)} · ${location(found.ref, basename(found.ref.filePath))}`,
-    focus: true,
-    closeOnEscape: true,
-    rows:
-      found.context.lines.length +
-      (found.comment?.messages.length ?? 0) +
-      FIELD_ROWS +
-      PANE_CHROME_ROWS,
-  });
-
-  if (!opened.isPlaced) {
-    await update($, drafting, () => null);
-    $.ui.toast(`Can't open the comment box: ${opened.reason}`);
+  if (started.target.kind === "edit") {
+    await $.prompt.fill({ text: found.comment?.messages.at(-1) ?? "" });
+  } else if (current === null || current.target.kind === "edit") {
+    await $.prompt.fill({ text: "" });
   }
 }
 
+// Ends the comment being written and gives the prompt back the person's draft.
+async function endDraft($: EngineInterface) {
+  const draft = await read($, drafting);
+
+  if (draft === null) {
+    return;
+  }
+
+  await update($, drafting, () => null);
+  await $.prompt.fill({ text: draft.aside });
+}
+
+// Saves `text` as the comment being written; resolves its id, or undefined
+// when nothing was saved.
 async function saveDraft($: EngineInterface, text: string, now: boolean) {
   const draft = await read($, drafting);
   const trimmed = text.trim();
 
   if (draft === null || trimmed === "") {
-    return;
+    return undefined;
   }
 
   const id = await saveMessage($, draft.toolUseId, draft.target, trimmed);
-  await update($, drafting, () => null);
-  await $.ui.close({ id: PANE });
+  await endDraft($);
 
   if (id !== undefined && now) {
     await sendNow($, id);
   }
-}
 
+  return id;
+}
 
 export const register: Register = (on) => {
   on("session.start", async ($, e, next) => {
@@ -158,6 +153,15 @@ export const register: Register = (on) => {
       },
       isDeferred: false,
     });
+
+    // 0.3.0 wrote comments in a pane, its draft holding no set-aside prompt.
+    const draft = await read($, drafting);
+
+    if (draft !== null && typeof draft.aside !== "string") {
+      await update($, drafting, () => null);
+    }
+
+    await $.ui.close({ id: "diff-comment" });
 
     return next(e);
   });
@@ -193,11 +197,23 @@ export const register: Register = (on) => {
   on("tool.call", attachToToolResult);
   on("turn.complete", flushAtTurnEnd);
 
-  // Esc closes the pane, which drops a draft unsaved.
-  on("ui.close", { id: PANE }, async ($, e, next) => {
-    await update($, drafting, () => null);
+  // While a comment is being written, Enter in the prompt saves it.
+  on("prompt.submit", async ($, e, next) => {
+    const draft = await read($, drafting);
 
-    return next(e);
+    if (draft === null || e.origin.kind !== "composer" || e.command !== undefined) {
+      return next(e);
+    }
+
+    if (e.text.trim() === "") {
+      return { drop: "Type the comment first" };
+    }
+
+    const id = await saveDraft($, e.text, false);
+    // Again once the engine has cleared the box of the dropped prompt.
+    $.clock.after(0, () => void $.prompt.fill({ text: id === undefined ? e.text : draft.aside }));
+
+    return { drop: id === undefined ? "That comment was deleted meanwhile" : `Comment ${id} saved` };
   });
 
   on("ui.render", { component: "ToolResult" }, async ($, e, next) => {
@@ -270,64 +286,75 @@ export const register: Register = (on) => {
     );
   });
 
-  on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
-    const { Box, Button, Code, Text } = $.ui.resolve(e);
-    // Mobile draws no Input; a draft is only started from the terminal's diff.
-    const { Input } = e.surface === "mobile" ? { Input: undefined } : $.ui.resolve(e);
-    const all = await readThreads($);
+  // The comment being written: its line, the lines around it and the keys,
+  // above the prompt it is typed in. A pane would dock beside a wide
+  // transcript and narrow it, and every diff in it would be drawn again.
+  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     const draft = await read($, drafting);
+    const found = draft === null ? undefined : draftLine(draft, await readThreads($));
 
-    const contextRows = (filePath: string, { lines, at }: LineContext) => (
-      <Box flexDirection="column" marginTop={1}>
-        {lines.map((line, i) => (
-          <Box flexDirection="row">
-            <Text color="warning">{i === at ? "›" : " "}</Text>
-            <Text> </Text>
-            <Box flexGrow={1} flexShrink={1}>
-              <Code format="diff" path={filePath} source={oneLineHunk(line)} />
-            </Box>
-          </Box>
-        ))}
-      </Box>
-    );
-
-    const found = draft === null ? undefined : draftLine(draft, all);
-
-    if (draft === null || found === undefined) {
-      return <Text dimColor>This comment was deleted.</Text>;
+    if (draft === null || found === undefined || e.props.hasSurvey) {
+      return next(e);
     }
 
+    const { Box, Button, Code, Text } = $.ui.resolve(e);
     const isEdit = draft.target.kind === "edit";
     const messages = found.comment?.messages ?? [];
     const earlier = isEdit ? messages.slice(0, -1) : messages;
-    const last = messages.at(-1);
     const open = found.comment?.status === "resolved" ? undefined : found.comment;
+    const { lines, at } = found.context;
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
         <Box flexDirection="row" gap={1}>
           <Box flexDirection="row" flexGrow={1} flexShrink={1} gap={1}>
             <Text weight="bold">{heading(draft.target)}</Text>
             <Text dimColor>{location(found.ref, basename(found.ref.filePath))}</Text>
           </Box>
-          {open !== undefined && (
-            <Box flexDirection="row" flexShrink={0} gap={1}>
-              <Button
-                key="pane-resolve"
-                onPress={async () => {
-                  await resolve($, new Set([open.id]), "person");
-                  await $.ui.close({ id: PANE });
-                }}
-              >
-                <Text color="success">Resolve</Text>
-              </Button>
-              <Button key="pane-delete" onPress={() => remove($, open.id)}>
-                <Text color="error">Delete</Text>
-              </Button>
-            </Box>
-          )}
+          <Box flexDirection="row" flexShrink={0} gap={1}>
+            {open !== undefined && (
+              <>
+                <Button
+                  key="draft-resolve"
+                  onPress={async () => {
+                    await resolve($, new Set([open.id]), "person");
+                    await endDraft($);
+                  }}
+                >
+                  <Text color="success">Resolve</Text>
+                </Button>
+                <Button key="draft-delete" onPress={() => remove($, open.id)}>
+                  <Text color="error">Delete</Text>
+                </Button>
+              </>
+            )}
+            {/* Ctrl+Enter cannot stand for it: the prompt submits on that chord. */}
+            <Button
+              key="draft-send-now"
+              onPress={async () => {
+                if ((await saveDraft($, (await $.prompt.read()).text, true)) === undefined) {
+                  $.ui.toast("Type the comment in the prompt first");
+                }
+              }}
+            >
+              Send now
+            </Button>
+            <Button key="draft-cancel" onPress={() => endDraft($)}>
+              Cancel
+            </Button>
+          </Box>
         </Box>
-        {contextRows(found.ref.filePath, found.context)}
+        <Box flexDirection="column" marginTop={1}>
+          {lines.map((line, i) => (
+            <Box flexDirection="row">
+              <Text color="warning">{i === at ? "›" : " "}</Text>
+              <Text> </Text>
+              <Box flexGrow={1} flexShrink={1}>
+                <Code format="diff" path={found.ref.filePath} source={oneLineHunk(line)} />
+              </Box>
+            </Box>
+          ))}
+        </Box>
         {earlier.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             {earlier.map((message) => (
@@ -335,44 +362,12 @@ export const register: Register = (on) => {
             ))}
           </Box>
         )}
-        <Box borderStyle="round" borderDimColor paddingX={1} marginTop={1}>
-          {Input === undefined ? (
-            <Text dimColor>Write it in the terminal</Text>
-          ) : (
-            // One row: from two the field adds its own "shift+⏎ new line"
-            // hint, and it always draws " ⏎ <submitLabel>", so that is left
-            // empty for the hints below.
-            <Input
-              key="comment-input"
-              autoFocus
-              placeholder={draft.target.kind === "reply" ? "Reply…" : "Leave a comment"}
-              submitLabel=""
-              {...(isEdit && last !== undefined ? { value: last } : {})}
-              onInput={(text) => {
-                draftText = text;
-              }}
-              onSubmit={(text) => saveDraft($, text, false)}
-            />
-          )}
-        </Box>
-        <Box flexDirection="row" gap={1} paddingX={1}>
-          <Button key="comment-save" plain onPress={() => saveDraft($, draftText, false)}>
-            <Text weight="bold">Enter</Text>{" "}
-            <Text dimColor>{isEdit ? "save" : "add to review queue"}</Text>
-          </Button>
-          <Text dimColor>·</Text>
-          <Button
-            key="comment-send-now"
-            plain
-            action={SEND_NOW_ACTION}
-            onPress={() => saveDraft($, draftText, true)}
-          >
-            <Text weight="bold">Ctrl+Enter</Text> <Text dimColor>send to Claude now</Text>
-          </Button>
-          <Text dimColor>·</Text>
-          <Button key="comment-cancel" plain onPress={() => $.ui.close({ id: PANE })}>
-            <Text weight="bold">Esc</Text> <Text dimColor>cancel</Text>
-          </Button>
+        <Box key="draft-keys" marginTop={1}>
+          <Text>
+            <Text dimColor>Type it in the prompt · </Text>
+            <Text weight="bold">Enter</Text>
+            <Text dimColor> {isEdit ? "save" : "add to review queue"}</Text>
+          </Text>
         </Box>
       </Box>
     );

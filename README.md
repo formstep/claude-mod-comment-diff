@@ -45,17 +45,15 @@ claude plugin uninstall comment-diff
 
 ### 1. Comment on a line
 
-When Claude edits or writes a file, or runs a command that changes one, the diff in the transcript shows a dim `+` beside each line. Click it and a pane opens with the line's context and a field for the comment.
+When Claude edits or writes a file, or runs a command that changes one, the diff in the transcript shows a dim `+` beside each line. Click it and a box opens above the prompt with the line and the lines around it. Type the comment in the prompt box itself:
 
-| Key | Action |
+| Key or button | Action |
 | --- | --- |
 | `Enter` | Add the comment to the review (pending) |
-| `Ctrl+Enter` | Send this comment to Claude now |
-| `Shift+Enter` / `Alt+Enter` | New line |
-| `←` `→` `Home` `End` `Ctrl+A` `Ctrl+E` | Move the cursor |
-| `Ctrl+U` | Delete to start of line |
+| **Send now** | Send this comment to Claude now |
+| **Cancel** | Drop the comment |
 
-The buttons under the box do the same: **Start a review** / **Add review comment**, **Add single comment**, **Cancel**.
+Whatever you had typed in the prompt is set aside while you write the comment, and put back after. Slash commands still run as usual.
 
 ### 2. Submit the review
 
@@ -71,10 +69,10 @@ Comment status icons:
 | `◐` | Sent: Claude has it |
 | `✓` | Resolved, by you or by Claude (with its note) |
 
-- **Open a comment:** click it in the list. A pane opens with the diff context and the comment's last message ready to rewrite, plus **Resolve** and **Delete**. A resolved comment opens as a reply, which reopens it. `Esc` closes the pane.
-- **Reply:** click `reply` under a comment in the diff, or type into the open pane.
+- **Open a comment:** click it in the list. The box opens with its diff context and the comment's last message in the prompt, ready to rewrite, plus **Resolve** and **Delete**. A resolved comment opens as a reply, which reopens it.
+- **Reply:** click `reply` under a comment in the diff.
 - **Edit:** click `edit` on an unresolved comment. If Claude already read it, the edited text is sent again.
-- **Resolve / Delete:** use the buttons in the list or the pane. Resolved comments cannot be deleted; they stay as a record.
+- **Resolve / Delete:** use the buttons in the list or the box. Resolved comments cannot be deleted; they stay as a record.
 - **Reopen:** reply to a resolved comment and it becomes pending again.
 
 Comments last for the session. They are not saved between sessions.
@@ -104,7 +102,7 @@ Layout:
 
 | Path | What it holds |
 | --- | --- |
-| `hooks/register.tsx` | Hook wiring and drawing: the diff, the comment list, the pane, the `resolve` tool |
+| `hooks/register.tsx` | Hook wiring and drawing: the diff, the comment list, the comment box above the prompt, the `resolve` tool |
 | `hooks/diff-rows.tsx` | The diff's rows: each line with its `+`, and the comments under them |
 | `hooks/threads.ts` | The comments' state and every change to it: add, reply, edit, send, resolve, delete |
 | `hooks/delivery.ts` | Sending to Claude: as a prompt when idle, or on the next tool result mid-turn |

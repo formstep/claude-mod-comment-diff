@@ -40,10 +40,12 @@ export type CommentTarget =
   | { kind: "new"; filePath: string; index: number; line: DiffLine; context: LineContext }
   | { kind: "reply" | "edit"; id: string };
 
-// The comment being written in the pane, and the tool call whose diff it is on.
+// The comment being written in the prompt box, the tool call whose diff it is
+// on, and the person's own draft, set aside until the comment is done.
 export type CommentDraft = {
   toolUseId: string;
   target: CommentTarget;
+  aside: string;
 };
 
 declare module "claude-code" {

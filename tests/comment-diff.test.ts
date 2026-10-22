@@ -37,17 +37,16 @@ const FOOTER = {
   props: { isDraft: false, isWorking: false, hint: "? for shortcuts" },
 } as const;
 
-const PANE = {
+const BAND = {
   plugin: PLUGIN,
   surface: "terminal",
-  component: "Pane",
-  requestId: "diff-comment",
+  component: "AbovePrompt",
   props: {
-    title: "c1",
-    isFocused: true,
-    bodyColumns: 80,
-    placement: "inline",
-    scroll: { offset: 0, bodyRows: 12 },
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 20,
+    bodyColumns: 100,
+    scroll: { offset: 0, bodyRows: 19 },
     view: {},
   },
 } as const;
@@ -61,87 +60,83 @@ const TURN_DONE = {
 } as const;
 
 const ENGINE_HINT: RenderElement = { type: "Text", props: {}, children: ["? for shortcuts"] };
+const ENGINE_BAND: RenderElement = { type: "Text", props: {}, children: ["engine band"] };
 
 type Diff = Mounted<"terminal", "ToolResult">;
 
+// The prompt box as the person left it: what they typed, or what a fill put
+// there. Each test's engine starts it empty.
+const box = { text: "" };
+
+// Stands in for the engine: the prompt box, the prompts that reach Claude,
+// and what the hint and the band draw on their own.
 function engineBeneath(on: On) {
   const prompts: string[] = [];
-  const promptBoxWrites: string[] = [];
-  const opened: { id: string; title?: string; focus?: true; closeOnEscape?: true }[] = [];
-  const closed: string[] = [];
+  box.text = "";
 
+  on("prompt.read", () => ({ value: { text: box.text, cursor: box.text.length } }));
   on("prompt.fill", (_$, e) => {
-    promptBoxWrites.push(e.text);
+    box.text = e.text;
     return { isFilled: true };
   });
   on("prompt.submit", (_$, e) => {
     prompts.push(e.text);
     return { text: e.text };
   });
-  on("ui.open", (_$, e) => {
-    opened.push(e);
-    return { value: { isPlaced: true } } as const;
-  });
-  on("ui.close", (_$, e) => {
-    closed.push(e.id);
-    return { value: undefined };
-  });
+  on("ui.close", () => ({ value: undefined }));
   on("clock.after", () => ({ value: undefined }));
   on("ui.render", { component: "PromptHint" }, () => ENGINE_HINT);
+  on("ui.render", { component: "AbovePrompt" }, () => ENGINE_BAND);
 
-  return { prompts, promptBoxWrites, opened, closed, panes: () => opened.map((o) => o.id) };
+  return { prompts };
 }
 
 const typed = (text: string) => ({ text, origin: { kind: "composer" }, wait: false }) as const;
 
-type Pane = Mounted<"terminal", "Pane">;
-const INPUT = "comment-input";
-const SEND_NOW = "comment-send-now";
+type Send = "enter" | "now";
 
-type Send = "enter" | "ctrl+enter";
-
-// Enter submits the field; Ctrl+Enter is the chord of the send-now Button.
-async function write(pane: Pane, text: string, send: Send = "enter") {
+// The person types `text` in the prompt, then presses Enter or the box's Send now.
+async function write($: Engine, text: string, send: Send = "enter") {
   if (send === "enter") {
-    await pane.input({ key: INPUT, text });
+    await $.prompt.submit(typed(text));
     return;
   }
 
-  await pane.input({ key: INPUT, text, kind: "change" });
-  await pane.press({ key: SEND_NOW });
+  box.text = text;
+  const band = await $.ui.mount(BAND);
+  await band.press({ key: "draft-send-now" });
+  await band.unmount();
 }
 
-// Presses a +, reply or edit in the diff and writes `body` in the pane it opens.
+// Presses a +, reply or edit in the diff and writes `body` for it.
 async function comment($: Engine, diff: Diff, button: string, body: string, send: Send = "enter") {
   await diff.press({ key: button });
-  const pane = await $.ui.mount(PANE);
-  await write(pane, body, send);
-  await pane.unmount();
+  await write($, body, send);
 }
 
-test("+ opens a focused pane on the line's file and line, and Enter there adds a pending comment", async ($, on) => {
-  const { prompts, promptBoxWrites, opened, closed } = engineBeneath(on);
+test("+ starts a comment in the prompt under a box showing its line, and Enter adds it as pending", async ($, on) => {
+  const { prompts } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
-
   expect(await diff.findAll({ type: "Code" })).toHaveLength(4);
 
+  box.text = "half a prompt";
   await diff.press({ key: "add-2" });
-  expect(opened).toMatchObject([
-    { id: "diff-comment", title: "New comment · thing.tsx:11", focus: true, closeOnEscape: true },
-  ]);
+  expect(box.text).toBe("");
 
-  const pane = await $.ui.mount(PANE);
-  expect(await pane.find({ type: "Text", text: "thing.tsx:11" })).toBeDefined();
-  expect(await pane.findAll({ type: "Code" })).toHaveLength(4);
-  expect((await pane.find({ key: INPUT }))?.props.autoFocus).toBe(true);
-  expect((await pane.find({ key: "comment-save" }))?.text).toBe("Enter add to review queue");
-  expect((await pane.find({ key: SEND_NOW }))?.props.action).toBe("chat:sendNow");
-  expect((await pane.find({ key: "comment-cancel" }))?.text).toBe("Esc cancel");
+  const band = await $.ui.mount(BAND);
+  expect(await band.find({ type: "Text", text: "New comment" })).toBeDefined();
+  expect(await band.find({ type: "Text", text: "thing.tsx:11" })).toBeDefined();
+  expect(await band.findAll({ type: "Code" })).toHaveLength(4);
+  expect((await band.find({ key: "draft-keys" }))?.text).toBe(
+    "Type it in the prompt · Enter add to review queue",
+  );
+  expect(await band.find({ key: "draft-send-now" })).toBeDefined();
 
-  await write(pane, "Name this better");
-  expect(closed).toEqual(["diff-comment"]);
+  const entered = await $.prompt.submit(typed("Name this better"));
+  expect(entered.drop).toBe("Comment c1 saved");
   expect(prompts).toEqual([]);
-  expect(promptBoxWrites).toEqual([]);
+  expect(box.text).toBe("half a prompt");
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
   expect(await diff.find({ type: "Text", text: "c1" })).toBeDefined();
   expect(await diff.find({ type: "Text", text: "Name this better" })).toBeDefined();
 
@@ -150,24 +145,23 @@ test("+ opens a focused pane on the line's file and line, and Enter there adds a
   expect((await footer.find({ key: "submit-review" }))?.props.label).toBe("Submit review (1)");
 });
 
-test("Ctrl+Enter sends the comment to Claude at once, its lines kept", async ($, on) => {
+test("Send now sends the comment to Claude at once, its lines kept", async ($, on) => {
   const { prompts } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
 
-  await diff.press({ key: "add-2" });
-  const pane = await $.ui.mount(PANE);
-  await write(pane, "Use a\nlookup", "ctrl+enter");
+  await comment($, diff, "add-2", "Use a\nlookup", "now");
 
   expect(prompts).toHaveLength(1);
   expect(prompts[0]).toContain("[c1] /repo/src/thing.tsx:11");
   expect(prompts[0]).toContain("Use a\nlookup");
+  expect(box.text).toBe("");
 
   const footer = await $.ui.mount(FOOTER);
   expect(await footer.find({ type: "Text", text: "0 pending · 1 sent · 0 resolved" })).toBeDefined();
   expect(await footer.find({ key: "submit-review" })).toBeUndefined();
 });
 
-test("Ctrl+Enter while Claude works rides on the next tool result, not a prompt for later", async ($, on) => {
+test("Send now while Claude works rides on the next tool result, not a prompt for later", async ($, on) => {
   const { prompts } = engineBeneath(on);
   on("turn.start", (_$, e) => ({ turnId: e.turnId }));
   on("turn.complete", (_$, e) => ({ text: e.answer }));
@@ -175,7 +169,7 @@ test("Ctrl+Enter while Claude works rides on the next tool result, not a prompt 
   const diff = await $.ui.mount(DIFF);
 
   await $.turn.start({ text: "do the thing", turnId: "t1" });
-  await comment($, diff, "add-2", "Stop, wrong file", "ctrl+enter");
+  await comment($, diff, "add-2", "Stop, wrong file", "now");
   expect(prompts).toEqual([]);
 
   const toolResult = await $.tool.call({ tool: "Bash", command: "ls" });
@@ -188,14 +182,14 @@ test("Ctrl+Enter while Claude works rides on the next tool result, not a prompt 
   expect(prompts).toEqual([]);
 });
 
-test("Ctrl+Enter while Claude works is sent as a prompt when the turn ends without a tool call", async ($, on) => {
+test("Send now while Claude works is sent as a prompt when the turn ends without a tool call", async ($, on) => {
   const { prompts } = engineBeneath(on);
   on("turn.start", (_$, e) => ({ turnId: e.turnId }));
   on("turn.complete", (_$, e) => ({ text: e.answer }));
   const diff = await $.ui.mount(DIFF);
 
   await $.turn.start({ text: "do the thing", turnId: "t1" });
-  await comment($, diff, "add-2", "Also this", "ctrl+enter");
+  await comment($, diff, "add-2", "Also this", "now");
   expect(prompts).toEqual([]);
 
   await $.turn.complete(TURN_DONE);
@@ -203,17 +197,23 @@ test("Ctrl+Enter while Claude works is sent as a prompt when the turn ends witho
   expect(prompts[0]).toContain("Also this");
 });
 
-test("an empty comment adds nothing and keeps the pane open", async ($, on) => {
-  const { closed } = engineBeneath(on);
+test("a blank comment adds nothing and keeps the box; Cancel gives the prompt back", async ($, on) => {
+  const { prompts } = engineBeneath(on);
+  on("ui.toast", () => ({ value: undefined }));
   const diff = await $.ui.mount(DIFF);
 
+  box.text = "mine";
   await diff.press({ key: "add-0" });
-  const pane = await $.ui.mount(PANE);
-  await write(pane, "   ");
-  await write(pane, "   ", "ctrl+enter");
+  expect((await $.prompt.submit(typed("   "))).drop).toBe("Type the comment first");
+  await write($, "   ", "now");
 
-  expect(closed).toEqual([]);
-  expect(await pane.find({ key: INPUT })).toBeDefined();
+  const band = await $.ui.mount(BAND);
+  expect(await band.find({ key: "draft-cancel" })).toBeDefined();
+  await band.press({ key: "draft-cancel" });
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
+  expect(box.text).toBe("mine");
+  expect(prompts).toEqual([]);
+
   const footer = await $.ui.mount(FOOTER);
   expect(await footer.drawn()).toMatchObject(ENGINE_HINT);
 });
@@ -229,8 +229,9 @@ test("a send that never arrives leaves the comment pending and unread, a reply m
     prompts.push(e.text);
     return { text: e.text };
   });
-  on("ui.open", () => ({ value: { isPlaced: true } }) as const);
-  on("ui.close", () => ({ value: undefined }));
+  on("prompt.read", () => ({ value: { text: "", cursor: 0 } }));
+  on("prompt.fill", () => ({ isFilled: true }));
+  on("clock.after", () => ({ value: undefined }));
   on("ui.render", { component: "PromptHint" }, () => ENGINE_HINT);
   const diff = await $.ui.mount(DIFF);
 
@@ -248,18 +249,17 @@ test("a send that never arrives leaves the comment pending and unread, a reply m
 });
 
 test("reply adds to the line's comment instead of making a new one, and the overview shows both", async ($, on) => {
-  const { prompts, opened } = engineBeneath(on);
+  const { prompts } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
   await comment($, diff, "add-2", "Test1");
   const footer = await $.ui.mount(FOOTER);
   await footer.press({ key: "submit-review" });
 
   await diff.press({ key: "reply-2" });
-  expect(opened.at(-1)?.title).toBe("Reply to c1 · thing.tsx:11");
-  const pane = await $.ui.mount(PANE);
-  expect(await pane.find({ type: "Text", text: "Test1" })).toBeDefined();
-  await write(pane, "Test2");
-  await pane.unmount();
+  const band = await $.ui.mount(BAND);
+  expect(await band.find({ type: "Text", text: "Reply to c1" })).toBeDefined();
+  expect(await band.find({ type: "Text", text: "Test1" })).toBeDefined();
+  await write($, "Test2");
 
   await comment($, diff, "add-2", "Test3");
 
@@ -272,18 +272,17 @@ test("reply adds to the line's comment instead of making a new one, and the over
   expect(prompts[1]).toContain("Already sent:\n> Test1\n\nNew:\nTest2\n\nTest3");
 });
 
-test("edit changes the comment's last message; an edit Claude has read goes out again", async ($, on) => {
-  const { prompts, opened } = engineBeneath(on);
+test("edit puts the comment's last message in the prompt; an edit Claude has read goes out again", async ($, on) => {
+  const { prompts } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
   await comment($, diff, "add-2", "Rename");
 
   await diff.press({ key: "edit-c1" });
-  expect(opened.at(-1)?.title).toBe("Edit c1 · thing.tsx:11");
-  const pane = await $.ui.mount(PANE);
-  expect((await pane.find({ key: INPUT }))?.props.value).toBe("Rename");
-  expect((await pane.find({ key: "comment-save" }))?.text).toBe("Enter save");
-  await write(pane, "Rename it");
-  await pane.unmount();
+  expect(box.text).toBe("Rename");
+  const band = await $.ui.mount(BAND);
+  expect(await band.find({ type: "Text", text: "Edit c1" })).toBeDefined();
+  expect((await band.find({ key: "draft-keys" }))?.text).toBe("Type it in the prompt · Enter save");
+  await write($, "Rename it");
   expect(await diff.find({ type: "Text", text: "Rename it" })).toBeDefined();
 
   const footer = await $.ui.mount(FOOTER);
@@ -314,84 +313,75 @@ test("a reply to a resolved comment reopens it", async ($, on) => {
   expect(await diff.find({ type: "Text", text: "resolved by you" })).toBeUndefined();
 });
 
-test("a comment in the overview opens the edit pane, and the prompt never touches the comment", async ($, on) => {
-  const { prompts, opened } = engineBeneath(on);
+test("a comment in the overview starts an edit of it, and a prompt after that reaches Claude", async ($, on) => {
+  const { prompts } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
   await comment($, diff, "add-2", "Test1");
 
   const footer = await $.ui.mount(FOOTER);
   await footer.press({ key: "go-c1" });
-  expect(opened.at(-1)).toMatchObject({
-    title: "Edit c1 · thing.tsx:11",
-    focus: true,
-    closeOnEscape: true,
-  });
+  expect(box.text).toBe("Test1");
 
-  const pane = await $.ui.mount(PANE);
-  expect(await pane.findAll({ type: "Code" })).toHaveLength(4);
-  expect((await pane.find({ key: INPUT }))?.props).toMatchObject({ autoFocus: true, value: "Test1" });
-  expect(await pane.find({ key: "pane-resolve" })).toBeDefined();
-  expect(await pane.find({ key: "pane-delete" })).toBeDefined();
+  const band = await $.ui.mount(BAND);
+  expect(await band.findAll({ type: "Code" })).toHaveLength(4);
+  expect(await band.find({ key: "draft-resolve" })).toBeDefined();
+  expect(await band.find({ key: "draft-delete" })).toBeDefined();
+
+  await write($, "Test1 rewritten");
+  expect((await footer.find({ key: "go-c1" }))?.text).toContain("Test1 rewritten");
+  expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
 
   const entered = await $.prompt.submit(typed("an ordinary prompt"));
   expect(entered.drop).toBeUndefined();
   expect(prompts).toEqual(["an ordinary prompt"]);
-  expect((await footer.find({ key: "go-c1" }))?.text).not.toContain("ordinary");
-
-  await write(pane, "Test1 rewritten");
-  expect((await footer.find({ key: "go-c1" }))?.text).toContain("Test1 rewritten");
-  expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
 });
 
-test("Resolve and Delete in the edit pane act on the comment and close the pane", async ($, on) => {
-  const { closed, opened } = engineBeneath(on);
+test("Resolve and Delete in the box act on the comment and end it", async ($, on) => {
+  engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
   await comment($, diff, "add-2", "Test1");
   await comment($, diff, "add-3", "Test2");
   const footer = await $.ui.mount(FOOTER);
+  const band = await $.ui.mount(BAND);
 
   await footer.press({ key: "go-c1" });
-  let pane = await $.ui.mount(PANE);
-  closed.length = 0;
-  await pane.press({ key: "pane-resolve" });
-  expect(closed).toEqual(["diff-comment"]);
+  await band.press({ key: "draft-resolve" });
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
+  expect(box.text).toBe("");
   expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 1 resolved" })).toBeDefined();
-  await pane.unmount();
 
-  // A resolved comment cannot be edited, so it opens a reply, which reopens it.
+  // A resolved comment cannot be edited, so it starts a reply, which reopens it.
   await footer.press({ key: "go-c1" });
-  expect(opened.at(-1)?.title).toBe("Reply to c1 · thing.tsx:11");
-  pane = await $.ui.mount(PANE);
-  expect(await pane.find({ key: "pane-resolve" })).toBeUndefined();
-  await pane.unmount();
+  expect(await band.find({ type: "Text", text: "Reply to c1" })).toBeDefined();
+  expect(await band.find({ key: "draft-resolve" })).toBeUndefined();
+  await band.press({ key: "draft-cancel" });
 
   await footer.press({ key: "go-c2" });
-  pane = await $.ui.mount(PANE);
-  closed.length = 0;
-  await pane.press({ key: "pane-delete" });
-  expect(closed).toEqual(["diff-comment"]);
+  await band.press({ key: "draft-delete" });
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
   expect(await footer.find({ key: "go-c2" })).toBeUndefined();
 });
 
-test("deleting a comment closes the pane replying to or editing it, and no other", async ($, on) => {
-  const { closed } = engineBeneath(on);
+test("deleting a comment ends the reply or edit of it, and no other", async ($, on) => {
+  engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
   await comment($, diff, "add-2", "Test1");
   await comment($, diff, "add-3", "Test2");
   const footer = await $.ui.mount(FOOTER);
-  closed.length = 0;
+  const band = await $.ui.mount(BAND);
 
+  box.text = "mine";
   await diff.press({ key: "reply-2" });
   await footer.press({ key: "delete-c2" });
-  expect(closed).toEqual([]);
+  expect(await band.find({ type: "Text", text: "Reply to c1" })).toBeDefined();
   await footer.press({ key: "delete-c1" });
-  expect(closed).toEqual(["diff-comment"]);
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
+  expect(box.text).toBe("mine");
 
   await comment($, diff, "add-3", "Test3");
-  closed.length = 0;
   await diff.press({ key: "edit-c3" });
   await footer.press({ key: "delete-c3" });
-  expect(closed).toEqual(["diff-comment"]);
+  expect(await band.drawn()).toMatchObject(ENGINE_BAND);
 });
 
 test("Submit review sends pending comments, Claude resolves them, and only unresolved ones can be deleted or edited", async ($, on) => {
@@ -484,8 +474,8 @@ test("a long diff keeps a + on every line, and a comment keeps the lines around 
   await comment($, diff, "add-300", "Mid file");
   const footer = await $.ui.mount(FOOTER);
   await footer.press({ key: "go-c1" });
-  const pane = await $.ui.mount(PANE);
-  expect(await pane.findAll({ type: "Code" })).toHaveLength(7);
+  const band = await $.ui.mount(BAND);
+  expect(await band.findAll({ type: "Code" })).toHaveLength(7);
 });
 
 test("a diff close to the text a tree draws still gets a + on every line", async ($, on) => {
@@ -523,7 +513,7 @@ const SHELL = {
 } as const;
 
 test("a shell command's diff keeps the engine's output above it and a + on every line of every file", async ($, on) => {
-  const { opened } = engineBeneath(on);
+  engineBeneath(on);
   on("session.cwd", () => ({ value: "/repo" }));
   const outputs: unknown[] = [];
   on("ui.render", { component: "ToolResult" }, (_$, e) => {
@@ -540,8 +530,10 @@ test("a shell command's diff keeps the engine's output above it and a + on every
   expect(await pluses(diff)).toBe(6);
 
   // Lines are numbered across the files: the created file's first line is 4.
-  await comment($, diff, "add-4", "Name it");
-  expect(opened.at(-1)?.title).toBe("New comment · fresh.ts:1");
+  await diff.press({ key: "add-4" });
+  const band = await $.ui.mount(BAND);
+  expect(await band.find({ type: "Text", text: "fresh.ts:1" })).toBeDefined();
+  await write($, "Name it");
   const footer = await $.ui.mount(FOOTER);
   expect((await footer.find({ key: "go-c1" }))?.text).toContain("fresh.ts:1");
   expect(await diff.find({ type: "Text", text: "Name it" })).toBeDefined();
