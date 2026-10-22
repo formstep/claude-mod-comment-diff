@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface } from "claude-code";
 
-import type { DiffComment, DiffViewTarget, Resolver } from "../types";
+import type { DiffComment, CommentTarget, Resolver } from "../types";
 import { reviewPrompt } from "./comment-text";
 import { deliver } from "./delivery";
 
@@ -26,7 +26,7 @@ function patch(
 async function addComment(
   $: EngineInterface,
   toolUseId: string,
-  { filePath, index, line, context }: Extract<DiffViewTarget, { kind: "new" }>,
+  { filePath, index, line, context }: Extract<CommentTarget, { kind: "new" }>,
   text: string,
 ) {
   const n = await update($, seq, (last) => last + 1);
@@ -91,7 +91,7 @@ async function editComment($: EngineInterface, id: string, text: string) {
 export function saveMessage(
   $: EngineInterface,
   toolUseId: string,
-  target: DiffViewTarget,
+  target: CommentTarget,
   text: string,
 ) {
   switch (target.kind) {

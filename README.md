@@ -105,7 +105,7 @@ Layout:
 | Path | What it holds |
 | --- | --- |
 | `hooks/register.tsx` | Hook wiring and drawing: the diff, the comment list, the pane, the `resolve` tool |
-| `hooks/diff-view.tsx` | Client module that draws an interactive diff with comment boxes |
+| `hooks/diff-rows.tsx` | The diff's rows: each line with its `+`, and the comments under them |
 | `hooks/threads.ts` | The comments' state and every change to it: add, reply, edit, send, resolve, delete |
 | `hooks/delivery.ts` | Sending to Claude: as a prompt when idle, or on the next tool result mid-turn |
 | `hooks/comment-text.ts` | How comments read: status icons, locations, the review prompt |

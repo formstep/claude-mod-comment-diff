@@ -1,37 +1,18 @@
-import type { DiffLine, DiffRun, DiffViewProps } from "../types";
+import type { DiffLine } from "../types";
 
 export type ChangedFile = {
   filePath: string;
   hunks: DiffLine[][];
 };
 
-type PackedLines = Pick<DiffViewProps, "first" | "hunks" | "lead" | "tail">;
-
-// The lines one view draws, as its props carry them once unpacked.
-export type ViewLines = {
-  first: number;
-  hunks: DiffLine[][];
-  lead: DiffLine[];
-  tail: DiffLine[];
-};
-
-// A run of a diff's lines that one view draws.
-export type DiffChunk = ViewLines & {
-  // Whether its first line goes on with a hunk the view before it draws.
-  continuesHunk: boolean;
-};
-
 // Lines of the hunk kept on each side of a commented line.
 export const CONTEXT_LINES = 3;
 
-// The engine unmounts a view whose tree serializes past 100,000 characters.
-// A row costs about ROW_COST plus its text, the file's name and the hunk
-// header; each view holds rows up to VIEW_BUDGET, leaving the rest for the
-// comments and the comment box drawn between them.
-const ROW_COST = 340;
-const VIEW_BUDGET = 70_000;
-
-type Hunk = Readonly<DiffRun>;
+type Hunk = {
+  oldStart: number;
+  newStart: number;
+  lines: readonly string[];
+};
 
 const MARKER = { added: "+", removed: "-", context: " " } as const;
 
@@ -107,46 +88,6 @@ export function changedFile(output: unknown): ChangedFile | undefined {
 
 export const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
-// Splits the diff into runs of lines that each fit one view, cutting a long
-// hunk where it must and handing each side of the cut the other's context.
-export function chunked(file: ChangedFile): DiffChunk[] {
-  const name = basename(file.filePath);
-  const chunks: DiffChunk[] = [];
-  let index = 0;
-  let cost = 0;
-
-  for (const hunk of file.hunks) {
-    for (const [at, line] of hunk.entries()) {
-      const rowCost = ROW_COST + name.length + JSON.stringify(oneLineHunk(line)).length;
-      const last = chunks.at(-1);
-
-      if (last === undefined || cost + rowCost > VIEW_BUDGET) {
-        if (last !== undefined && at > 0) {
-          last.tail = hunk.slice(at, at + CONTEXT_LINES);
-        }
-
-        chunks.push({
-          first: index,
-          hunks: [[line]],
-          lead: hunk.slice(Math.max(0, at - CONTEXT_LINES), at),
-          tail: [],
-          continuesHunk: at > 0,
-        });
-        cost = 0;
-      } else if (at === 0) {
-        last.hunks.push([line]);
-      } else {
-        last.hunks.at(-1)?.push(line);
-      }
-
-      cost += rowCost;
-      index += 1;
-    }
-  }
-
-  return chunks;
-}
-
 const plural = (n: number) => `${n} ${n === 1 ? "line" : "lines"}`;
 
 export function changeSummary(lines: readonly DiffLine[]): string {
@@ -166,27 +107,6 @@ export const lineNumber = (line: DiffLine) =>
 // The line as a unified diff writes it: marker, then text.
 export const diffRow = (line: DiffLine) => `${MARKER[line.kind]}${line.text}`;
 
-const run = (lines: readonly DiffLine[]): DiffRun => ({
-  oldStart: lines[0]?.oldLine ?? 0,
-  newStart: lines[0]?.newLine ?? 0,
-  lines: lines.map(diffRow),
-});
-
-// A view's lines as its props carry them, and back.
-export const packed = ({ first, hunks, lead, tail }: ViewLines): PackedLines => ({
-  first,
-  hunks: hunks.map(run),
-  lead: run(lead),
-  tail: run(tail),
-});
-
-export const unpacked = ({ first, hunks, lead, tail }: PackedLines): ViewLines => ({
-  first,
-  hunks: hunks.map(hunkLines),
-  lead: hunkLines(lead),
-  tail: hunkLines(tail),
-});
-
 // A one-line unified hunk, so the engine's own diff renderer draws each row
 // with its gutter, marker and colours while we put a button beside it.
 export function oneLineHunk(line: DiffLine): string {
@@ -197,3 +117,8 @@ export function oneLineHunk(line: DiffLine): string {
 
   return `@@ -${oldRange} +${newRange} @@\n${diffRow(line)}`;
 }
+
+// The characters of text a diff's rows draw: each line's one-line hunk and
+// its + label.
+export const drawnText = (lines: readonly DiffLine[]) =>
+  lines.reduce((sum, line) => sum + oneLineHunk(line).length + 1, 0);

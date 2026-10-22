@@ -94,9 +94,6 @@ function engineBeneath(on: On) {
 
 const typed = (text: string) => ({ text, origin: { kind: "composer" }, wait: false }) as const;
 
-// The whole diff is one Client.
-const VIEW = "diff-toolu_1-0";
-
 type Pane = Mounted<"terminal", "Pane">;
 const INPUT = "comment-input";
 const SEND_NOW = "comment-send-now";
@@ -126,7 +123,7 @@ test("+ opens a focused pane on the line's file and line, and Enter there adds a
   const { prompts, promptBoxWrites, opened, closed } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
 
-  expect(await diff.findAll({ type: "Code", in: VIEW })).toHaveLength(4);
+  expect(await diff.findAll({ type: "Code" })).toHaveLength(4);
 
   await diff.press({ key: "add-2" });
   expect(opened).toMatchObject([
@@ -145,8 +142,8 @@ test("+ opens a focused pane on the line's file and line, and Enter there adds a
   expect(closed).toEqual(["diff-comment"]);
   expect(prompts).toEqual([]);
   expect(promptBoxWrites).toEqual([]);
-  expect(await diff.find({ type: "Text", text: "c1", in: VIEW })).toBeDefined();
-  expect(await diff.find({ type: "Text", text: "Name this better", in: VIEW })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "c1" })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "Name this better" })).toBeDefined();
 
   const footer = await $.ui.mount(FOOTER);
   expect((await footer.find({ key: "go-c1" }))?.text).toContain("thing.tsx:11");
@@ -287,7 +284,7 @@ test("edit changes the comment's last message; an edit Claude has read goes out 
   expect((await pane.find({ key: "comment-save" }))?.text).toBe("Enter save");
   await write(pane, "Rename it");
   await pane.unmount();
-  expect(await diff.find({ type: "Text", text: "Rename it", in: VIEW })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "Rename it" })).toBeDefined();
 
   const footer = await $.ui.mount(FOOTER);
   await footer.press({ key: "submit-review" });
@@ -314,7 +311,7 @@ test("a reply to a resolved comment reopens it", async ($, on) => {
 
   expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
   expect(await footer.find({ key: "delete-c1" })).toBeDefined();
-  expect(await diff.find({ type: "Text", text: "resolved by you", in: VIEW })).toBeUndefined();
+  expect(await diff.find({ type: "Text", text: "resolved by you" })).toBeUndefined();
 });
 
 test("a comment in the overview opens the edit pane, and the prompt never touches the comment", async ($, on) => {
@@ -421,8 +418,8 @@ test("Submit review sends pending comments, Claude resolves them, and only unres
   expect(answer.result).toBe("Resolved c1. No such comment (the person may have deleted it): c9.");
 
   expect(await footer.find({ key: "delete-c1" })).toBeUndefined();
-  expect(await diff.find({ key: "edit-c1", in: VIEW })).toBeUndefined();
-  expect(await diff.find({ type: "Text", text: "resolved by Claude: Renamed it", in: VIEW })).toBeDefined();
+  expect(await diff.find({ key: "edit-c1" })).toBeUndefined();
+  expect(await diff.find({ type: "Text", text: "resolved by Claude: Renamed it" })).toBeDefined();
 
   await footer.press({ key: "delete-c2" });
   expect(await footer.find({ key: "go-c2" })).toBeUndefined();
@@ -438,97 +435,67 @@ test("the person can resolve a comment themselves", async ($, on) => {
   await footer.press({ key: "resolve-c1" });
 
   expect(await footer.find({ key: "delete-c1" })).toBeUndefined();
-  expect(await diff.find({ type: "Text", text: "resolved by you", in: VIEW })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "resolved by you" })).toBeDefined();
 });
 
-// A new file long enough that one view's tree would pass the engine's bound.
-const LONG_WRITE = {
-  ...DIFF,
-  requestId: "toolu_long",
-  props: {
-    tool_use_id: "toolu_long",
-    tool: "Write",
-    isErrored: false,
-    output: {
-      type: "create",
-      filePath: `/repo/${"nested/".repeat(12)}long.ts`,
-      content: Array.from({ length: 600 }, (_, i) => `export const value${i} = "line ${i}";\n`).join(""),
-      structuredPatch: [],
-      originalFile: null,
+const written = (requestId: string, filePath: string, lines: number, line: (i: number) => string) =>
+  ({
+    ...DIFF,
+    requestId,
+    props: {
+      tool_use_id: requestId,
+      tool: "Write",
+      isErrored: false,
+      output: {
+        type: "create",
+        filePath,
+        content: Array.from({ length: lines }, (_, i) => `${line(i)}\n`).join(""),
+        structuredPatch: [],
+        originalFile: null,
+      },
     },
-  },
-} as const;
+  }) as const;
 
-// A new file whose lines, each sent to the views as a DiffLine, would pass the
-// characters a tree holds for its views' props.
-const WIDE_WRITE = {
-  ...DIFF,
-  requestId: "toolu_wide",
-  props: {
-    tool_use_id: "toolu_wide",
-    tool: "Write",
-    isErrored: false,
-    output: {
-      type: "create",
-      filePath: "/repo/wide.ts",
-      content: Array.from(
-        { length: 900 },
-        (_, i) => `export const value${i} = "a longer string literal that fills line ${i}";\n`,
-      ).join(""),
-      structuredPatch: [],
-      originalFile: null,
-    },
-  },
-} as const;
+const LONG_WRITE = written(
+  "toolu_long",
+  `/repo/${"nested/".repeat(12)}long.ts`,
+  600,
+  (i) => `export const value${i} = "line ${i}";`,
+);
 
-// The + buttons across every view of the diff.
+const wideLine = (i: number) =>
+  `export const value${i} = "a longer string literal that fills line ${i}";`;
+
+// Close to the 100,000 characters of text a tree draws.
+const WIDE_WRITE = written("toolu_wide", "/repo/wide.ts", 900, wideLine);
+
+// The + buttons of the diff.
 async function pluses(diff: Diff) {
-  let count = 0;
+  const buttons = await diff.findAll({ type: "Button" });
 
-  for (const view of await diff.findAll({ type: "Client" })) {
-    const buttons = await diff.findAll({ type: "Button", in: String(view.props.key) });
-    count += buttons.filter((b) => String(b.props.key).startsWith("add-")).length;
-  }
-
-  return count;
+  return buttons.filter((b) => String(b.props.key).startsWith("add-")).length;
 }
 
-test("a long diff is split across views: every line keeps its +, and a comment at a cut keeps its context", async ($, on) => {
+test("a long diff keeps a + on every line, and a comment keeps the lines around it", async ($, on) => {
   engineBeneath(on);
   const diff = await $.ui.mount(LONG_WRITE);
-  const views = await diff.findAll({ type: "Client" });
-  expect(views.length).toBeGreaterThan(1);
   expect(await pluses(diff)).toBe(600);
 
-  // The first line of the second view, then the last line of the first.
-  const second = String(views[1]?.props.key);
-  const cut = Number(second.split("-").at(-1));
-
-  for (const index of [cut, cut - 1]) {
-    await diff.press({ key: `add-${index}` });
-    const pane = await $.ui.mount(PANE);
-    await write(pane, "At the cut");
-    await pane.unmount();
-  }
-
+  await comment($, diff, "add-300", "Mid file");
   const footer = await $.ui.mount(FOOTER);
-
-  for (const id of ["c1", "c2"]) {
-    await footer.press({ key: `go-${id}` });
-    const pane = await $.ui.mount(PANE);
-    expect(await pane.findAll({ type: "Code" })).toHaveLength(7);
-    await pane.unmount();
-  }
+  await footer.press({ key: "go-c1" });
+  const pane = await $.ui.mount(PANE);
+  expect(await pane.findAll({ type: "Code" })).toHaveLength(7);
 });
 
-test("a diff too long to send each line as an object still gets a + on every line", async ($, on) => {
+test("a diff close to the text a tree draws still gets a + on every line", async ($, on) => {
   engineBeneath(on);
   const diff = await $.ui.mount(WIDE_WRITE);
 
   expect(await pluses(diff)).toBe(900);
 });
 
-test("errored calls and other tools keep the engine's own drawing", async ($, on) => {
+test("errored calls, other tools and diffs past a tree's text keep the engine's own drawing", async ($, on) => {
   engineBeneath(on);
   const engineDrawn: RenderElement = { type: "Text", props: {}, children: ["engine"] };
   on("ui.render", { component: "ToolResult" }, () => engineDrawn);
@@ -542,4 +509,7 @@ test("errored calls and other tools keep the engine's own drawing", async ($, on
     props: { ...DIFF.props, tool: "Bash", output: { stdout: "" } },
   });
   expect(await bash.drawn()).toMatchObject(engineDrawn);
+
+  const huge = await $.ui.mount(written("toolu_huge", "/repo/huge.ts", 1200, wideLine));
+  expect(await huge.drawn()).toMatchObject(engineDrawn);
 });

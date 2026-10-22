@@ -1,15 +1,7 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register } from "claude-code";
 
-import type {
-  CommentDraft,
-  DiffComment,
-  DiffViewMessage,
-  DiffViewProps,
-  DiffViewTarget,
-  LineContext,
-  LineRef,
-} from "../types";
+import type { CommentDraft, CommentTarget, DiffComment, LineContext, LineRef } from "../types";
 import {
   countSummary,
   location,
@@ -18,7 +10,8 @@ import {
   STATUS,
 } from "./comment-text";
 import { attachToToolResult, flushAtTurnEnd, trackTurnStart } from "./delivery";
-import { basename, changedFile, changeSummary, chunked, oneLineHunk, packed } from "./diff";
+import { basename, changedFile, changeSummary, drawnText, oneLineHunk } from "./diff";
+import { diffRows } from "./diff-rows";
 import {
   deleteComment,
   readThreads,
@@ -29,9 +22,10 @@ import {
 } from "./threads";
 
 const DIFF_TOOLS = new Set(["Edit", "Write"]);
-// The views' props count toward the 100,000 characters a tree holds; past
-// that a diff is left to the engine.
-const MAX_PROPS = 90_000;
+// A tree draws the first 100,000 characters of its texts and holds 20,000
+// nodes, about four a row; past either a diff is left to the engine.
+const MAX_TEXT = 90_000;
+const MAX_ROWS = 4_000;
 const PANE = "diff-comment";
 // The pane's rows besides the context lines and messages: its header, its
 // footer and the margins between them.
@@ -68,7 +62,7 @@ async function remove($: EngineInterface, id: string) {
   }
 }
 
-const heading = (target: DiffViewTarget) =>
+const heading = (target: CommentTarget) =>
   target.kind === "new"
     ? "New comment"
     : `${target.kind === "reply" ? "Reply to" : "Edit"} ${target.id}`;
@@ -190,14 +184,6 @@ export const register: Register = (on) => {
   on("tool.call", attachToToolResult);
   on("turn.complete", flushAtTurnEnd);
 
-  on("ui.message", { module: "hooks/diff-view.tsx" }, async ($, e) => {
-    // The matcher admits only the diff view, which posts a DiffViewMessage.
-    const { target } = e.data as DiffViewMessage;
-    await compose($, { toolUseId: e.requestId, target });
-
-    return {};
-  });
-
   // Esc closes the pane, which drops a draft unsaved.
   on("ui.close", { id: PANE }, async ($, e, next) => {
     await update($, drafting, () => null);
@@ -222,34 +208,15 @@ export const register: Register = (on) => {
       return next(e);
     }
 
-    const all = await readThreads($);
-    const comments = all
-      .filter((c) => c.toolUseId === e.requestId)
-      .map((c) => ({
-        id: c.id,
-        index: c.index,
-        messages: c.messages,
-        status: c.status,
-        note: resolvedNote(c),
-      }));
-    const views = chunked(file).map(({ continuesHunk, ...chunk }) => {
-      const end = chunk.first + chunk.hunks.flat().length;
+    const comments = (await readThreads($)).filter((c) => c.toolUseId === e.requestId);
+    const text = drawnText(lines) + comments.flatMap((c) => c.messages).join("").length;
 
-      return {
-        continuesHunk,
-        props: {
-          ...packed(chunk),
-          filePath: file.filePath,
-          comments: comments.filter((c) => c.index >= chunk.first && c.index < end),
-        } satisfies DiffViewProps,
-      };
-    });
-
-    if (JSON.stringify(views).length > MAX_PROPS) {
+    if (text > MAX_TEXT || lines.length > MAX_ROWS) {
       return next(e);
     }
 
-    const { Box, Client, Text } = $.ui.resolve(e);
+    const elements = $.ui.resolve(e);
+    const { Box, Text } = elements;
 
     return (
       <Box flexDirection="column">
@@ -257,17 +224,9 @@ export const register: Register = (on) => {
           {changeSummary(lines)}
           <Text dimColor> · + to comment</Text>
         </Text>
-        {views.map(({ continuesHunk, props }) => (
-          <Box flexDirection="column">
-            {props.first > 0 && !continuesHunk && <Text dimColor> ...</Text>}
-            <Client
-              key={`diff-${e.requestId}-${props.first}`}
-              module="./diff-view.tsx"
-              props={props}
-              width="100%"
-            />
-          </Box>
-        ))}
+        {diffRows(elements, file, comments, (target) =>
+          compose($, { toolUseId: e.requestId, target }),
+        )}
       </Box>
     );
   });
