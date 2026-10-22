@@ -80,9 +80,11 @@ export function diffRows(
           ? { kind: "new", filePath: file.filePath, index: here, line, context: contextAt(hunk, at) }
           : { kind: "reply", id: comment.id };
 
+      // The + takes the cells either side of it: a terminal that reports the
+      // pointer within a cell lets a click a hair off a one-cell label miss.
       rows.push(
-        <Box flexDirection="row" gap={1}>
-          <Button key={`add-${here}`} plain dimColor label="+" onPress={() => open(target)} />
+        <Box flexDirection="row">
+          <Button key={`add-${here}`} plain dimColor label=" + " onPress={() => open(target)} />
           <Box flexGrow={1} flexShrink={1}>
             <Code format="diff" path={path} source={oneLineHunk(line)} />
           </Box>
