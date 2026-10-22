@@ -10,7 +10,16 @@ import {
   STATUS,
 } from "./comment-text";
 import { attachToToolResult, flushAtTurnEnd, trackTurnStart } from "./delivery";
-import { basename, changedFile, changeSummary, drawnText, oneLineHunk } from "./diff";
+import {
+  basename,
+  changeCounts,
+  changedFile,
+  changeSummary,
+  drawnText,
+  oneLineHunk,
+  shellChanges,
+  withoutShellDiff,
+} from "./diff";
 import { diffRows } from "./diff-rows";
 import {
   deleteComment,
@@ -192,40 +201,70 @@ export const register: Register = (on) => {
   });
 
   on("ui.render", { component: "ToolResult" }, async ($, e, next) => {
-    if (e.surface !== "terminal" || e.props.isErrored || !DIFF_TOOLS.has(e.props.tool)) {
+    if (e.surface !== "terminal" || e.props.isErrored) {
       return next(e);
     }
 
-    const file = changedFile(e.props.output);
-
-    if (file === undefined) {
-      return next(e);
-    }
-
-    const lines = file.hunks.flat();
-
-    if (lines.length === 0) {
-      return next(e);
-    }
-
+    const { tool, output } = e.props;
+    const edited = DIFF_TOOLS.has(tool) ? changedFile(output) : undefined;
+    const shell = tool === "Bash" ? shellChanges(output) : undefined;
+    const files = edited === undefined ? (shell?.files ?? []) : [edited];
+    const lines = files.flatMap((file) => file.hunks.flat());
     const comments = (await readThreads($)).filter((c) => c.toolUseId === e.requestId);
     const text = drawnText(lines) + comments.flatMap((c) => c.messages).join("").length;
 
-    if (text > MAX_TEXT || lines.length > MAX_ROWS) {
+    if (lines.length === 0 || text > MAX_TEXT || lines.length > MAX_ROWS) {
       return next(e);
     }
 
     const elements = $.ui.resolve(e);
     const { Box, Text } = elements;
+    const open = (target: CommentTarget) => compose($, { toolUseId: e.requestId, target });
+
+    if (shell === undefined) {
+      return (
+        <Box flexDirection="column">
+          <Text>
+            {changeSummary(lines)}
+            <Text dimColor> · + to comment</Text>
+          </Text>
+          {files.flatMap((file) => diffRows(elements, file, 0, comments, open))}
+        </Box>
+      );
+    }
+
+    // The command's own output as the engine draws it, and under it each file
+    // it changed, headed as the engine heads it.
+    const ran = await next({ ...e, props: { ...e.props, output: withoutShellDiff(output) } });
+    const cwd = `${await $.session.cwd()}/`;
+    let first = 0;
 
     return (
       <Box flexDirection="column">
-        <Text>
-          {changeSummary(lines)}
-          <Text dimColor> · + to comment</Text>
-        </Text>
-        {diffRows(elements, file, comments, (target) =>
-          compose($, { toolUseId: e.requestId, target }),
+        {ran}
+        {shell.files.map((file) => {
+          const fileLines = file.hunks.flat();
+          const rows = diffRows(elements, file, first, comments, open);
+          first += fileLines.length;
+
+          return (
+            <Box flexDirection="column">
+              <Text>
+                {file.change}{" "}
+                <Text weight="bold">
+                  {file.filePath.startsWith(cwd) ? file.filePath.slice(cwd.length) : file.filePath}
+                </Text>{" "}
+                {changeCounts(fileLines)}
+                <Text dimColor> · + to comment</Text>
+              </Text>
+              {rows}
+            </Box>
+          );
+        })}
+        {shell.moreFiles > 0 && (
+          <Text dimColor>
+            … {shell.moreFiles} more {shell.moreFiles === 1 ? "file" : "files"} changed
+          </Text>
         )}
       </Box>
     );

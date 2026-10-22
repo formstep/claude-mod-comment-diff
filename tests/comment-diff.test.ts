@@ -495,6 +495,58 @@ test("a diff close to the text a tree draws still gets a + on every line", async
   expect(await pluses(diff)).toBe(900);
 });
 
+// A shell command that changed two files, and one more than the engine diffed.
+const SHELL = {
+  ...DIFF,
+  requestId: "toolu_sh",
+  props: {
+    tool_use_id: "toolu_sh",
+    tool: "Bash",
+    isErrored: false,
+    output: {
+      stdout: "applied",
+      stderr: "",
+      interrupted: false,
+      bashEditDiff: {
+        files: [
+          { filePath: "/repo/src/thing.tsx", hunks: EDIT_OUTPUT.structuredPatch },
+          {
+            filePath: "/repo/src/fresh.ts",
+            hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ["+one", "+two"] }],
+            created: true,
+          },
+        ],
+        moreFiles: 1,
+      },
+    },
+  },
+} as const;
+
+test("a shell command's diff keeps the engine's output above it and a + on every line of every file", async ($, on) => {
+  const { opened } = engineBeneath(on);
+  on("session.cwd", () => ({ value: "/repo" }));
+  const outputs: unknown[] = [];
+  on("ui.render", { component: "ToolResult" }, (_$, e) => {
+    outputs.push(e.props.output);
+    return { type: "Text", props: {}, children: ["applied"] };
+  });
+
+  const diff = await $.ui.mount(SHELL);
+  expect(outputs.at(-1)).toEqual({ stdout: "applied", stderr: "", interrupted: false });
+  expect(await diff.find({ type: "Text", text: "applied" })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "src/thing.tsx" })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "src/fresh.ts" })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "… 1 more file changed" })).toBeDefined();
+  expect(await pluses(diff)).toBe(6);
+
+  // Lines are numbered across the files: the created file's first line is 4.
+  await comment($, diff, "add-4", "Name it");
+  expect(opened.at(-1)?.title).toBe("New comment · fresh.ts:1");
+  const footer = await $.ui.mount(FOOTER);
+  expect((await footer.find({ key: "go-c1" }))?.text).toContain("fresh.ts:1");
+  expect(await diff.find({ type: "Text", text: "Name it" })).toBeDefined();
+});
+
 test("errored calls, other tools and diffs past a tree's text keep the engine's own drawing", async ($, on) => {
   engineBeneath(on);
   const engineDrawn: RenderElement = { type: "Text", props: {}, children: ["engine"] };

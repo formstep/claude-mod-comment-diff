@@ -14,7 +14,8 @@ function contextAt(hunk: readonly DiffLine[], at: number): LineContext {
   return { lines: hunk.slice(from, at + CONTEXT_LINES + 1), at: at - from };
 }
 
-// The diff's rows, each line with its + and any comment on it under it.
+// The file's rows, each line with its + and any comment on it under it; the
+// lines are numbered across the tool call's files from `first`.
 //
 // Drawn in the hooks module's tree, not a Client's: the engine seats a pane
 // opened for a press on a Button a hook drew at any width, and one opened for
@@ -22,6 +23,7 @@ function contextAt(hunk: readonly DiffLine[], at: number): LineContext {
 export function diffRows(
   { Box, Button, Code, Text }: RowElements,
   file: ChangedFile,
+  first: number,
   comments: readonly DiffComment[],
   open: (target: CommentTarget) => void,
 ): RenderElement[] {
@@ -61,7 +63,7 @@ export function diffRows(
   );
 
   const rows: RenderElement[] = [];
-  let index = 0;
+  let index = first;
 
   for (const [hunkIndex, hunk] of file.hunks.entries()) {
     if (hunkIndex > 0) {

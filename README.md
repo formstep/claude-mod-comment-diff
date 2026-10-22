@@ -4,7 +4,7 @@ A [Claude Code](https://claude.com/claude-code) mod that lets you review Claude'
 
 ## Features
 
-- **Line comments on every diff.** Each `Edit` and `Write` result in the transcript is redrawn as a commentable diff with a `+` next to every line. Click it to write a comment on that line.
+- **Line comments on every diff.** Each `Edit` and `Write` result, and each shell command that changes files, is redrawn in the transcript as a commentable diff with a `+` next to every line. Click it to write a comment on that line.
 - **Reviews or single comments.** Collect several comments into a review and send them together, or send one comment straight away.
 - **Overview above the prompt.** A "Diff comments" list above the prompt box shows every comment with its status, file and line, plus a **Submit review** button.
 - **Threads.** Reply to a comment to add to it, edit your last message, or reopen a resolved comment by replying to it.
@@ -45,7 +45,7 @@ claude plugin uninstall comment-diff
 
 ### 1. Comment on a line
 
-When Claude edits or writes a file, the diff in the transcript shows a dim `+` beside each line. Click it and a comment box opens under that line.
+When Claude edits or writes a file, or runs a command that changes one, the diff in the transcript shows a dim `+` beside each line. Click it and a pane opens with the line's context and a field for the comment.
 
 | Key | Action |
 | --- | --- |

@@ -5,6 +5,13 @@ export type ChangedFile = {
   hunks: DiffLine[][];
 };
 
+// A file a shell command changed, and the word the engine heads its diff with.
+export type ShellChange = ChangedFile & { change: "Created" | "Deleted" | "Updated" };
+
+// The files a Bash call changed, as the engine diffed them, and how many more
+// it changed than it diffed.
+export type ShellChanges = { files: ShellChange[]; moreFiles: number };
+
 // Lines of the hunk kept on each side of a commented line.
 export const CONTEXT_LINES = 3;
 
@@ -86,6 +93,39 @@ export function changedFile(output: unknown): ChangedFile | undefined {
   return undefined;
 }
 
+// A Bash result's `bashEditDiff`: the working-tree changes the command made.
+export function shellChanges(output: unknown): ShellChanges | undefined {
+  const diff = isRecord(output) ? output.bashEditDiff : undefined;
+
+  if (!isRecord(diff) || !Array.isArray(diff.files)) {
+    return undefined;
+  }
+
+  const files = diff.files.filter(isRecord).flatMap((file): ShellChange[] => {
+    if (typeof file.filePath !== "string" || !Array.isArray(file.hunks)) {
+      return [];
+    }
+
+    const change = file.created === true ? "Created" : file.deleted === true ? "Deleted" : "Updated";
+
+    return [{ filePath: file.filePath, hunks: file.hunks.filter(isHunk).map(hunkLines), change }];
+  });
+
+  return { files, moreFiles: typeof diff.moreFiles === "number" ? diff.moreFiles : 0 };
+}
+
+// A Bash result less its diff, which the engine then leaves out of its drawing.
+export function withoutShellDiff(output: unknown): unknown {
+  if (!isRecord(output)) {
+    return output;
+  }
+
+  const rest = { ...output };
+  delete rest.bashEditDiff;
+
+  return rest;
+}
+
 export const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 const plural = (n: number) => `${n} ${n === 1 ? "line" : "lines"}`;
@@ -99,6 +139,14 @@ export function changeSummary(lines: readonly DiffLine[]): string {
   }
 
   return added > 0 ? `Added ${plural(added)}` : `Removed ${plural(removed)}`;
+}
+
+// The counts after a changed file's name, as the engine writes them: `(+3 -1)`.
+export function changeCounts(lines: readonly DiffLine[]): string {
+  const added = lines.filter((l) => l.kind === "added").length;
+  const removed = lines.filter((l) => l.kind === "removed").length;
+
+  return `(+${added} -${removed})`;
 }
 
 export const lineNumber = (line: DiffLine) =>
