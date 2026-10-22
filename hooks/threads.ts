@@ -47,7 +47,7 @@ async function addComment(
 }
 
 // A message added to a resolved comment reopens it, so Claude reads it.
-export async function extendComment($: EngineInterface, id: string, text: string) {
+async function extendComment($: EngineInterface, id: string, text: string) {
   const all = await patch($, new Set([id]), ({ resolvedBy, resolution, ...rest }) => ({
     ...rest,
     messages: [...rest.messages, text],

@@ -53,26 +53,29 @@ export type DiffViewProps = {
   lead: DiffLine[];
   tail: DiffLine[];
   comments: DiffViewComment[];
-  reviewLabel: string;
 };
 
-// What the diff view posts: a new comment on a line, a reply to a comment, or
-// an edit of its last message; `sendNow` sends it to Claude at once.
+// What the diff view posts to open the comment pane: a new comment on a line,
+// a reply to a comment, or an edit of its last message.
 export type DiffViewTarget =
   | { kind: "new"; filePath: string; index: number; line: DiffLine; context: LineContext }
   | { kind: "reply" | "edit"; id: string };
 
 export type DiffViewMessage = {
   target: DiffViewTarget;
-  text: string;
-  sendNow: boolean;
+};
+
+// The comment being written in the pane, and the tool call whose diff it is on.
+export type CommentDraft = {
+  toolUseId: string;
+  target: DiffViewTarget;
 };
 
 declare module "claude-code" {
   interface PluginState {
     "comment-diff": {
       threads: DiffComment[];
-      viewing: string | null;
+      draft: CommentDraft | null;
       seq: number;
     };
   }

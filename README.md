@@ -71,7 +71,7 @@ Comment status icons:
 | `◐` | Sent: Claude has it |
 | `✓` | Resolved, by you or by Claude (with its note) |
 
-- **Open a comment:** click it in the list. A pane opens with the diff context and the full thread. While it is open, text you type in the prompt box is added to that comment instead of going to Claude as a normal message. `Esc` closes the pane.
+- **Open a comment:** click it in the list. A pane opens with the diff context and the comment's last message ready to rewrite, plus **Resolve** and **Delete**. A resolved comment opens as a reply, which reopens it. `Esc` closes the pane.
 - **Reply:** click `reply` under a comment in the diff, or type into the open pane.
 - **Edit:** click `edit` on an unresolved comment. If Claude already read it, the edited text is sent again.
 - **Resolve / Delete:** use the buttons in the list or the pane. Resolved comments cannot be deleted; they stay as a record.

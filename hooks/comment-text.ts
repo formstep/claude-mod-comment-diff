@@ -34,10 +34,6 @@ export function countSummary(list: readonly DiffComment[]) {
   return `${count("pending")} pending · ${count("sent")} sent · ${count("resolved")} resolved`;
 }
 
-// GitHub's wording: the first pending comment starts a review, later ones join it.
-export const reviewLabel = (list: readonly DiffComment[]) =>
-  list.some((c) => c.status === "pending") ? "Add review comment" : "Start a review";
-
 const quote = (text: string) =>
   text
     .split("\n")
