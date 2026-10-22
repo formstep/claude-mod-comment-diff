@@ -1,6 +1,6 @@
 {
   "name": "comment-diff",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Comment on lines of Claude's diffs, send them as a review and track pending/resolved comments above the prompt",
   "types": "./types/index.d.ts",
   "author": {
