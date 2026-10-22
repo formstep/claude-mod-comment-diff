@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/599c0337-7678-4df6-b63a-dd3ee40f9566
+
 # comment-diff
 
 A [Claude Code](https://claude.com/claude-code) mod that lets you review Claude's edits the way you review a pull request on GitHub: comment on individual lines of a diff, batch the comments into a review, send it, and watch Claude work through and resolve each one.
