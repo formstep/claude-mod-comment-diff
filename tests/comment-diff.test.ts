@@ -1,6 +1,6 @@
 import type { On, RenderElement } from "claude-code";
-import { expect, test } from "claude-code/testing";
-import type { Engine, Mounted } from "claude-code/testing";
+import { expect, mock, test } from "claude-code/testing";
+import type { Engine, MockSession, Mounted } from "claude-code/testing";
 
 const PLUGIN = "comment-diff";
 
@@ -68,10 +68,19 @@ type Diff = Mounted<"terminal", "ToolResult">;
 // there. Each test's engine starts it empty.
 const box = { text: "" };
 
-// Stands in for the engine: the prompt box, the prompts that reach Claude,
-// and what the hint and the band draw on their own.
+// The texts of the rows the person does not see, oldest first.
+const hiddenRows = (session: MockSession) =>
+  session
+    .appended()
+    .map((row) => row.message.content.map((b) => (typeof b.text === "string" ? b.text : "")).join(""));
+
+// Stands in for the engine: the prompt box, the prompts that start Claude's
+// turn, the reviews that go in beside them, the clock, and what the hint and
+// the band draw on their own.
 function engineBeneath(on: On) {
   const prompts: string[] = [];
+  const session = mock.session(on);
+  const clock = mock.clock(on);
   box.text = "";
 
   on("prompt.read", () => ({ value: { text: box.text, cursor: box.text.length } }));
@@ -84,11 +93,10 @@ function engineBeneath(on: On) {
     return { text: e.text };
   });
   on("ui.close", () => ({ value: undefined }));
-  on("clock.after", () => ({ value: undefined }));
   on("ui.render", { component: "PromptHint" }, () => ENGINE_HINT);
   on("ui.render", { component: "AbovePrompt" }, () => ENGINE_BAND);
 
-  return { prompts };
+  return { prompts, reviews: () => hiddenRows(session), clock };
 }
 
 const typed = (text: string) => ({ text, origin: { kind: "composer" }, wait: false }) as const;
@@ -146,14 +154,15 @@ test("+ starts a comment in the prompt under a box showing its line, and Enter a
 });
 
 test("Send now sends the comment to Claude at once, its lines kept", async ($, on) => {
-  const { prompts } = engineBeneath(on);
+  const { prompts, reviews } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
 
   await comment($, diff, "add-2", "Use a\nlookup", "now");
 
-  expect(prompts).toHaveLength(1);
-  expect(prompts[0]).toContain("[c1] /repo/src/thing.tsx:11");
-  expect(prompts[0]).toContain("Use a\nlookup");
+  expect(prompts).toEqual(["Handle review comment c1."]);
+  expect(reviews()).toHaveLength(1);
+  expect(reviews()[0]).toContain("[c1] /repo/src/thing.tsx:11");
+  expect(reviews()[0]).toContain("Use a\nlookup");
   expect(box.text).toBe("");
 
   const footer = await $.ui.mount(FOOTER);
@@ -183,7 +192,7 @@ test("Send now while Claude works rides on the next tool result, not a prompt fo
 });
 
 test("Send now while Claude works is sent as a prompt when the turn ends without a tool call", async ($, on) => {
-  const { prompts } = engineBeneath(on);
+  const { prompts, reviews, clock } = engineBeneath(on);
   on("turn.start", (_$, e) => ({ turnId: e.turnId }));
   on("turn.complete", (_$, e) => ({ text: e.answer }));
   const diff = await $.ui.mount(DIFF);
@@ -193,8 +202,32 @@ test("Send now while Claude works is sent as a prompt when the turn ends without
   expect(prompts).toEqual([]);
 
   await $.turn.complete(TURN_DONE);
-  expect(prompts).toHaveLength(1);
-  expect(prompts[0]).toContain("Also this");
+  await clock.settle();
+  expect(prompts).toEqual(["Handle review comment c1."]);
+  expect(reviews()[0]).toContain("Also this");
+});
+
+test("a review submitted while Claude works waits for the turn to end", async ($, on) => {
+  const { prompts, reviews, clock } = engineBeneath(on);
+  on("turn.start", (_$, e) => ({ turnId: e.turnId }));
+  on("turn.complete", (_$, e) => ({ text: e.answer }));
+  on("tool.call", () => ({ result: "file.txt" }));
+  const diff = await $.ui.mount(DIFF);
+
+  await $.turn.start({ text: "do the thing", turnId: "t1" });
+  await comment($, diff, "add-2", "Rename");
+  const footer = await $.ui.mount(FOOTER);
+  await footer.press({ key: "submit-review" });
+
+  const toolResult = await $.tool.call({ tool: "Bash", command: "ls" });
+  expect(toolResult.context).toBeUndefined();
+  expect(prompts).toEqual([]);
+  expect(reviews()).toEqual([]);
+
+  await $.turn.complete(TURN_DONE);
+  await clock.settle();
+  expect(prompts).toEqual(["Handle review comment c1."]);
+  expect(reviews()[0]).toContain("Rename");
 });
 
 test("a blank comment adds nothing and keeps the box; Cancel gives the prompt back", async ($, on) => {
@@ -245,6 +278,7 @@ test("pressing the + or edit of the comment being written again cancels it", asy
 
 test("a send that never arrives leaves the comment pending and unread, a reply made meanwhile included", async ($, on) => {
   const prompts: string[] = [];
+  const session = mock.session(on);
   let isDropping = true;
   on("prompt.submit", (_$, e) => {
     if (isDropping) {
@@ -268,13 +302,13 @@ test("a send that never arrives leaves the comment pending and unread, a reply m
 
   isDropping = false;
   await footer.press({ key: "submit-review" });
-  expect(prompts).toHaveLength(1);
-  expect(prompts[0]).toContain("Test1\n\nTest2");
-  expect(prompts[0]).not.toContain("Already sent");
+  expect(prompts).toEqual(["Handle review comment c1."]);
+  expect(hiddenRows(session).at(-1)).toContain("Test1\n\nTest2");
+  expect(hiddenRows(session).at(-1)).not.toContain("Already sent");
 });
 
 test("reply adds to the line's comment instead of making a new one, and the overview shows both", async ($, on) => {
-  const { prompts } = engineBeneath(on);
+  const { reviews } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
   await comment($, diff, "add-2", "Test1");
   const footer = await $.ui.mount(FOOTER);
@@ -293,12 +327,12 @@ test("reply adds to the line's comment instead of making a new one, and the over
   expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
 
   await footer.press({ key: "submit-review" });
-  expect(prompts[1]).toContain("[c1] /repo/src/thing.tsx:11");
-  expect(prompts[1]).toContain("Already sent:\n> Test1\n\nNew:\nTest2\n\nTest3");
+  expect(reviews()[1]).toContain("[c1] /repo/src/thing.tsx:11");
+  expect(reviews()[1]).toContain("Already sent:\n> Test1\n\nNew:\nTest2\n\nTest3");
 });
 
 test("edit puts the comment's last message in the prompt; an edit Claude has read goes out again", async ($, on) => {
-  const { prompts } = engineBeneath(on);
+  const { reviews } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
   await comment($, diff, "add-2", "Rename");
 
@@ -312,14 +346,14 @@ test("edit puts the comment's last message in the prompt; an edit Claude has rea
 
   const footer = await $.ui.mount(FOOTER);
   await footer.press({ key: "submit-review" });
-  expect(prompts[0]).not.toContain("edited");
+  expect(reviews()[0]).not.toContain("edited");
 
   await comment($, diff, "edit-c1", "Rename it to total");
   expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
 
   await footer.press({ key: "submit-review" });
-  expect(prompts[1]).toContain("[c1] /repo/src/thing.tsx:11 (edited since you read it)");
-  expect(prompts[1]).toContain("Rename it to total");
+  expect(reviews()[1]).toContain("[c1] /repo/src/thing.tsx:11 (edited since you read it)");
+  expect(reviews()[1]).toContain("Rename it to total");
 });
 
 test("a reply to a resolved comment reopens it", async ($, on) => {
@@ -410,7 +444,7 @@ test("deleting a comment ends the reply or edit of it, and no other", async ($, 
 });
 
 test("Submit review sends pending comments, Claude resolves them, and only unresolved ones can be deleted or edited", async ($, on) => {
-  const { prompts } = engineBeneath(on);
+  const { prompts, reviews } = engineBeneath(on);
   const diff = await $.ui.mount(DIFF);
 
   await comment($, diff, "add-2", "Rename");
@@ -419,10 +453,11 @@ test("Submit review sends pending comments, Claude resolves them, and only unres
   const footer = await $.ui.mount(FOOTER);
   await footer.press({ key: "submit-review" });
 
-  expect(prompts).toHaveLength(1);
-  expect(prompts[0]).toContain("[c1] /repo/src/thing.tsx:11");
-  expect(prompts[0]).toContain("[c2] /repo/src/thing.tsx:11 (removed line)");
-  expect(prompts[0]).toContain("mcp__comment-diff__resolve");
+  expect(prompts).toEqual(["Handle review comments c1, c2."]);
+  expect(reviews()).toHaveLength(1);
+  expect(reviews()[0]).toContain("[c1] /repo/src/thing.tsx:11");
+  expect(reviews()[0]).toContain("[c2] /repo/src/thing.tsx:11 (removed line)");
+  expect(reviews()[0]).toContain("mcp__comment-diff__resolve");
   expect(await footer.find({ type: "Text", text: "0 pending · 2 sent · 0 resolved" })).toBeDefined();
 
   const answer = await $.tool.call({
@@ -453,7 +488,45 @@ test("the person can resolve a comment themselves", async ($, on) => {
   expect(await diff.find({ type: "Text", text: "resolved by you" })).toBeDefined();
 });
 
-const written = (requestId: string, filePath: string, lines: number, line: (i: number) => string) =>
+test("a resolved comment leaves the list a minute later and stays under its line in the diff", async ($, on) => {
+  const { clock } = engineBeneath(on);
+  const diff = await $.ui.mount(DIFF);
+  await comment($, diff, "add-1", "Keep this");
+  await comment($, diff, "add-3", "Fine as is");
+
+  const footer = await $.ui.mount(FOOTER);
+  await footer.press({ key: "resolve-c2" });
+  await clock.advance(59_999);
+  expect(await footer.find({ key: "go-c2" })).toBeDefined();
+
+  await clock.advance(1);
+  expect(await footer.find({ key: "go-c2" })).toBeUndefined();
+  expect(await footer.find({ type: "Text", text: "1 pending · 0 sent · 0 resolved" })).toBeDefined();
+  expect(await diff.find({ type: "Text", text: "resolved by you" })).toBeDefined();
+
+  await $.tool.call({ tool: "mcp__comment-diff__resolve", ids: ["c1"], note: "Kept it" });
+  await clock.advance(60_000);
+  expect(await footer.drawn()).toMatchObject(ENGINE_HINT);
+});
+
+test("a comment reopened before its minute is up stays in the list", async ($, on) => {
+  const { clock } = engineBeneath(on);
+  const diff = await $.ui.mount(DIFF);
+  await comment($, diff, "add-3", "Fine as is");
+
+  const footer = await $.ui.mount(FOOTER);
+  await footer.press({ key: "resolve-c1" });
+  await clock.advance(30_000);
+  await comment($, diff, "reply-3", "Not quite");
+  await clock.advance(30_000);
+  expect(await footer.find({ key: "go-c1" })).toBeDefined();
+
+  await footer.press({ key: "resolve-c1" });
+  await clock.advance(60_000);
+  expect(await footer.find({ key: "go-c1" })).toBeUndefined();
+});
+
+const written =(requestId: string, filePath: string, lines: number, line: (i: number) => string) =>
   ({
     ...DIFF,
     requestId,

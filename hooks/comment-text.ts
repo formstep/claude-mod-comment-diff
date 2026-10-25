@@ -70,3 +70,9 @@ export function reviewPrompt(comments: readonly DiffComment[]): string {
 
   return [intro, ...blocks].join("\n\n");
 }
+
+// The prompt that starts Claude's turn on a review: the review itself goes in
+// as a row the person does not see.
+export function reviewLine(ids: readonly string[]): string {
+  return `Handle review ${ids.length === 1 ? "comment" : "comments"} ${ids.join(", ")}.`;
+}

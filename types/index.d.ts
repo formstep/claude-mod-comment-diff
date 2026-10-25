@@ -32,6 +32,11 @@ export type DiffComment = LineRef & {
   edited?: true;
   resolvedBy?: Resolver;
   resolution?: string;
+  // When it was resolved, in milliseconds since the epoch.
+  resolvedAt?: number;
+  // Out of the list above the prompt, a while after it was resolved; the
+  // diff keeps it under its line.
+  unlisted?: true;
 };
 
 // What a press in the diff opens the comment pane on: a new comment on a

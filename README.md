@@ -61,7 +61,7 @@ Whatever you had typed in the prompt is set aside while you write the comment, a
 
 ### 2. Submit the review
 
-Pending comments collect in the **Diff comments** list above the prompt. Press **Submit review (n)** to send them all to Claude in one message. Each comment includes the file, the line and a few lines of surrounding context, so Claude knows exactly what you mean.
+Pending comments collect in the **Diff comments** list above the prompt. Press **Submit review (n)** to send them all to Claude in one message. Each comment includes the file, the line and a few lines of surrounding context, so Claude knows exactly what you mean. The transcript shows only a one-line prompt naming the comments (`Handle review comments c1, c2.`), not the whole review. A review submitted while Claude works is sent when its turn ends.
 
 ### 3. Follow up
 
@@ -76,7 +76,8 @@ Comment status icons:
 - **Open a comment:** click it in the list. The box opens with its diff context and the comment's last message in the prompt, ready to rewrite, plus **Resolve** and **Delete**. A resolved comment opens as a reply, which reopens it.
 - **Reply:** click `reply` under a comment in the diff.
 - **Edit:** click `edit` on an unresolved comment. If Claude already read it, the edited text is sent again.
-- **Resolve / Delete:** use the buttons in the list or the box. Resolved comments cannot be deleted; they stay as a record.
+- **Resolve / Delete:** use the buttons in the list or the box. Resolved comments cannot be deleted; they stay under their line in the diff as a record.
+- **Cleanup:** a resolved comment leaves the list a minute after it is resolved, so the list holds only what is still open.
 - **Reopen:** reply to a resolved comment and it becomes pending again.
 
 Comments last for the session. They are not saved between sessions.

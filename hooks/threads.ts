@@ -5,6 +5,9 @@ import type { DiffComment, CommentTarget, Resolver } from "../types";
 import { reviewPrompt } from "./comment-text";
 import { deliver } from "./delivery";
 
+// How long a resolved comment stays in the list above the prompt.
+const RESOLVED_LISTED_MS = 60_000;
+
 const threads = atom({ plugin: "comment-diff", key: "threads" } as const, []);
 const seq = atom({ plugin: "comment-diff", key: "seq" } as const, 0);
 
@@ -48,11 +51,15 @@ async function addComment(
 
 // A message added to a resolved comment reopens it, so Claude reads it.
 async function extendComment($: EngineInterface, id: string, text: string) {
-  const all = await patch($, new Set([id]), ({ resolvedBy, resolution, ...rest }) => ({
-    ...rest,
-    messages: [...rest.messages, text],
-    status: "pending",
-  }));
+  const all = await patch(
+    $,
+    new Set([id]),
+    ({ resolvedBy, resolution, resolvedAt, unlisted, ...rest }) => ({
+      ...rest,
+      messages: [...rest.messages, text],
+      status: "pending",
+    }),
+  );
 
   if (!all.some((c) => c.id === id)) {
     $.ui.toast(`${id} was deleted meanwhile, so the message was not added`);
@@ -128,7 +135,11 @@ async function submitComments(
     return { ...rest, sent: c.messages.length, status: "sent" };
   });
 
-  await deliver($, { text, onFailure: (reason) => putBack($, before, reason) }, mode);
+  await deliver(
+    $,
+    { ids: [...before.keys()], text, onFailure: (reason) => putBack($, before, reason) },
+    mode,
+  );
 }
 
 // A send that did not arrive leaves its comments pending, as Claude last read
@@ -174,12 +185,50 @@ export async function submitReview($: EngineInterface) {
 }
 
 // Resolves the list as written.
-export function resolve($: EngineInterface, ids: ReadonlySet<string>, by: Resolver, note?: string) {
-  return patch($, ids, (c) =>
+export async function resolve(
+  $: EngineInterface,
+  ids: ReadonlySet<string>,
+  by: Resolver,
+  note?: string,
+) {
+  const at = await $.clock.now();
+  const all = await patch($, ids, (c) =>
     c.status === "resolved"
       ? c
-      : { ...c, status: "resolved", resolvedBy: by, ...(note ? { resolution: note } : {}) },
+      : {
+          ...c,
+          status: "resolved",
+          resolvedBy: by,
+          resolvedAt: at,
+          ...(note ? { resolution: note } : {}),
+        },
   );
+  unlistLater($, at, at);
+
+  return all;
+}
+
+// Takes the comments resolved at `at` out of the list; one reopened since, or
+// resolved again, has another time and stays.
+function unlistLater($: EngineInterface, at: number, now: number) {
+  $.clock.after(Math.max(0, at + RESOLVED_LISTED_MS - now), () => {
+    void update($, threads, (all) =>
+      all.map((c): DiffComment =>
+        c.status === "resolved" && (c.resolvedAt ?? 0) === at ? { ...c, unlisted: true } : c,
+      ),
+    );
+  });
+}
+
+// Timers end with the module, so after a reload each resolved comment still
+// listed is timed again, from when it was resolved.
+export async function timeResolved($: EngineInterface) {
+  const now = await $.clock.now();
+  const listed = (await readThreads($)).filter((c) => c.status === "resolved" && !c.unlisted);
+
+  for (const at of new Set(listed.map((c) => c.resolvedAt ?? 0))) {
+    unlistLater($, at, now);
+  }
 }
 
 // Resolved comments cannot be deleted: they stay as a record.

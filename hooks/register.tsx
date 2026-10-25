@@ -28,6 +28,7 @@ import {
   saveMessage,
   sendNow,
   submitReview,
+  timeResolved,
 } from "./threads";
 
 const DIFF_TOOLS = new Set(["Edit", "Write"]);
@@ -183,6 +184,7 @@ export const register: Register = (on) => {
     }
 
     await $.ui.close({ id: "diff-comment" });
+    await timeResolved($);
 
     return next(e);
   });
@@ -395,7 +397,7 @@ export const register: Register = (on) => {
   });
 
   on("ui.render", { component: "PromptHint" }, async ($, e, next) => {
-    const list = await readThreads($);
+    const list = (await readThreads($)).filter((c) => !c.unlisted);
     const hint = await next(e);
 
     if (list.length === 0) {
